@@ -6,6 +6,7 @@ members = [
     "crates/grace-ctl",
     "crates/grace-app",
     "crates/grace-shader",
+    "crates/grace-bench",
     "shim/graphics-proxy",
     "shim/dxgi-proxy",
     "shim/load-probe",
@@ -22,6 +23,7 @@ default-members = [
     "crates/grace-ctl",
     "crates/grace-app",
     "crates/grace-shader",
+    "crates/grace-bench",
     "xtask",
 ]
 

@@ -3,6 +3,7 @@
 //! `cargo xtask oracle …` — среда эталона на GPTK (см. oracle.rs).
 //! `cargo xtask shaders [игра]` — корпус шейдеров: сводка → DXIL→metallib → проверка в Metal.
 //! `cargo xtask overrides [игра]` — собрать подмены шейдеров из `../grace-<игра>/shaders/overrides/*.hlsl`.
+//! `cargo xtask bench <журнал|метка> [<журнал2|метка2>] [--skip сек] [--game игра]` — отчёт по времени кадра.
 
 mod oracle;
 
@@ -20,6 +21,7 @@ fn main() -> Result<()> {
         Some("oracle") => oracle::main(&args[1..]),
         Some("shaders") => shaders(args.get(1).map_or("eldenring", String::as_str)),
         Some("overrides") => overrides(args.get(1).map_or("eldenring", String::as_str)),
+        Some("bench") => bench(&args[1..]),
         _ => bail!("использование: cargo xtask bundle [--debug] | shim [--release] | oracle …"),
     }
 }
@@ -209,4 +211,34 @@ fn overrides(game: &str) -> Result<()> {
         bail!("не все подмены собрались");
     }
     Ok(())
+}
+
+/// Отчёт по журналам кадров. Аргумент — путь к CSV или метка прогона
+/// (`.local/frametimes/<игра>/<метка>.csv`, игра по умолчанию eldenring).
+fn bench(args: &[String]) -> Result<()> {
+    let game = args.iter().position(|a| a == "--game").and_then(|i| args.get(i + 1)).map_or("eldenring", String::as_str);
+    let dir = root().parent().context("корень ProjectPort")?.join(".local/frametimes").join(game);
+    let mut pass: Vec<String> = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--game" => {
+                it.next();
+            }
+            "--skip" => {
+                pass.push(a.clone());
+                if let Some(v) = it.next() {
+                    pass.push(v.clone());
+                }
+            }
+            other => {
+                let p = PathBuf::from(other);
+                let path = if p.exists() { p } else { dir.join(format!("{other}.csv")) };
+                pass.push(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    let mut cmd = vec!["run".to_string(), "-q".into(), "--release".into(), "-p".into(), "grace-bench".into(), "--".into()];
+    cmd.extend(pass);
+    cargo(&cmd.iter().map(String::as_str).collect::<Vec<_>>())
 }

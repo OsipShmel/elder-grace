@@ -1,0 +1,14 @@
+[package]
+name = "compat-realtime"
+description = "Compat-shim для старого Wine: api-ms-win-core-realtime-l1-1-1/2.dll (Query*InterruptTime*, Windows 10+)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "api_ms_win_core_realtime"
+crate-type = ["cdylib"]
+
+[lints]
+workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "crash-probe"
+description = "AeDebug-отладчик для Wine: снимает отчёт о падении (регистры, стек, модули с оффсетами)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

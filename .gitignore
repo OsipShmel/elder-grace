@@ -1,0 +1,24 @@
+# Всё локальное и игровое: данные игр, песочницы, кэш, захваты, трейсы, дампы шейдеров
+.local/
+cache/
+captures/
+traces/
+config/local.toml
+
+# Сборка
+target/
+build/
+*.app/
+
+# Инструменты Apple
+*.gputrace
+*.trace
+xcuserdata/
+DerivedData/
+
+# IDE
+.idea/
+.vscode/
+
+# macOS
+.DS_Store

@@ -1,0 +1,19 @@
+# Скопируй в config/local.toml (он в .gitignore) и поправь пути.
+
+[paths]
+local_dir = "/Users/<you>/CodeProject/ProjectPort/.local"
+
+[games.eldenring]
+# Чистая установка из Steam. Только чтение, никогда не изменяется.
+pristine_dir = "/путь/к/ELDEN RING/Game"
+# Рабочая копия для эталона и shim. Сюда можно класть свои файлы.
+sandbox_dir  = "/Users/<you>/CodeProject/ProjectPort/.local/game_bean/elden_ring"
+# Приготовленный кэш для нативного рантайма.
+cache_dir    = "/Users/<you>/CodeProject/ProjectPort/.local/cache/eldenring"
+exe          = "eldenring.exe"
+steam_appid  = 1245620
+
+[oracle]
+# Среда эталона: "gptk" (cargo xtask oracle) или "crossover"
+env    = "gptk"
+bottle = "EldenRing"

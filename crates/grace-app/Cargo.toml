@@ -1,0 +1,27 @@
+[package]
+name = "grace-app"
+description = "Оболочка macOS и нативный рантайм Elder Grace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "grace-app"
+path = "src/main.rs"
+
+[dependencies]
+grace-core.workspace = true
+grace-proto.workspace = true
+anyhow.workspace = true
+winit.workspace = true
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-app-kit.workspace = true
+objc2-metal.workspace = true
+objc2-quartz-core.workspace = true
+objc2-core-foundation = "0.3"
+png = "0.18"
+
+[lints]
+workspace = true

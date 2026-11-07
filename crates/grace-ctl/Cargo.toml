@@ -1,0 +1,17 @@
+[package]
+name = "grace-ctl"
+description = "CLI управления запущенным рантаймом Elder Grace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+grace-core.workspace = true
+grace-proto.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

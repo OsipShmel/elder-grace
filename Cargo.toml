@@ -1,0 +1,54 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/grace-core",
+    "crates/grace-proto",
+    "crates/grace-ctl",
+    "crates/grace-app",
+    "crates/grace-shader",
+    "shim/graphics-proxy",
+    "shim/load-probe",
+    "shim/compat-bcrypt",
+    "shim/crash-probe",
+    "shim/compat-realtime",
+    "tools/grace-irconv",
+    "xtask",
+]
+# shim собирается только под Windows: `cargo build -p graphics-proxy --target x86_64-pc-windows-gnu`
+default-members = [
+    "crates/grace-core",
+    "crates/grace-proto",
+    "crates/grace-ctl",
+    "crates/grace-app",
+    "crates/grace-shader",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+grace-core = { path = "crates/grace-core" }
+grace-proto = { path = "crates/grace-proto" }
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+clap = { version = "4", features = ["derive"] }
+winit = "0.30"
+raw-window-handle = "0.6"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+objc2-metal = "0.3"
+objc2-quartz-core = "0.3"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+debug = "line-tables-only"

@@ -1,0 +1,14 @@
+[package]
+name = "compat-bcrypt"
+description = "Compat-shim для старого Wine: прокси bcrypt.dll с поддержкой псевдо-хендлов алгоритмов"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "bcrypt"
+crate-type = ["cdylib"]
+
+[lints]
+workspace = true

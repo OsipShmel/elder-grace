@@ -89,7 +89,7 @@ fn info_plist() -> String {
 }
 
 pub(crate) fn shim(release: bool) -> Result<()> {
-    let mut build = vec!["build", "-p", "graphics-proxy", "-p", "load-probe", "-p", "compat-bcrypt", "-p", "crash-probe", "-p", "compat-realtime", "--target", "x86_64-pc-windows-gnu"];
+    let mut build = vec!["build", "-p", "graphics-proxy", "-p", "dxgi-proxy", "-p", "load-probe", "-p", "compat-bcrypt", "-p", "crash-probe", "-p", "compat-realtime", "--target", "x86_64-pc-windows-gnu"];
     if release {
         build.push("--release");
     }

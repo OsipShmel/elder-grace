@@ -3,8 +3,9 @@
 //! - `setup [игра]` — префикс Wine, compat-shim'ы, crash-probe, реестр, Windows-Steam.
 //!   Идемпотентно: можно запускать повторно (например, после самообновления Steam).
 //! - `steam [--ui]` — запустить клиент Steam в префиксе (по умолчанию без окна).
-//! - `run [игра] [--no-hud] [--no-shim] [--no-overrides]` — запустить игру из песочницы (Metal HUD включён,
-//!   прокси d3d12 дампит шейдеры в `.local/shaders/<игра>/`).
+//! - `run [игра] [--no-hud] [--no-shim] [--no-overrides] [--label L]` — запустить игру из песочницы (Metal HUD включён,
+//!   прокси d3d12 дампит шейдеры в `.local/shaders/<игра>/`, прокси dxgi пишет время кадра
+//!   в `.local/frametimes/<игра>/<метка>.csv`).
 //! - `kill` — остановить все процессы префикса.
 //! - `status` — процессы, вход в Steam, отчёты crash-probe.
 //!
@@ -26,6 +27,9 @@ const SHIM_TARGET: &str = "target/x86_64-pc-windows-gnu/release";
 /// Процессы, которым нужен compat-bcrypt (через него же грузятся остальные исправления).
 const BCRYPT_EXES: &[&str] = &["steam.exe", "steamwebhelper.exe", "steamservice.exe", "steamcmd.exe"];
 
+/// Прокси графического API, которые кладутся в песочницу игры.
+const GAME_PROXIES: &[&str] = &["d3d12.dll", "dxgi.dll"];
+
 struct Ctx {
     root: PathBuf,
     local: PathBuf,
@@ -37,7 +41,14 @@ struct Ctx {
 pub fn main(args: &[String]) -> Result<()> {
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     let flag = |f: &str| args.iter().any(|a| a == f);
-    let game_key = args.iter().skip(1).find(|a| !a.starts_with("--")).cloned().unwrap_or_else(|| "eldenring".into());
+    // Первый позиционный аргумент после команды (значение --label не считается).
+    let game_key = args
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(i, a)| !a.starts_with("--") && args.get(i - 1).map(String::as_str) != Some("--label"))
+        .map(|(_, a)| a.clone())
+        .unwrap_or_else(|| "eldenring".into());
     match cmd {
         "setup" => setup(&ctx(&game_key)?),
         "steam" => {
@@ -45,7 +56,10 @@ pub fn main(args: &[String]) -> Result<()> {
             install_shims(&c)?;
             start_steam(&c, flag("--ui"))
         }
-        "run" => run(&ctx(&game_key)?, !flag("--no-hud"), !flag("--no-shim"), !flag("--no-overrides")),
+        "run" => {
+            let label = args.iter().position(|a| a == "--label").and_then(|i| args.get(i + 1)).cloned();
+            run(&ctx(&game_key)?, RunOpts { hud: !flag("--no-hud"), shim: !flag("--no-shim"), overrides: !flag("--no-overrides"), label })
+        }
         "kill" => {
             wine(&ctx(&game_key)?, "wineserver", &["-k"]).status()?;
             Ok(())
@@ -117,10 +131,10 @@ fn setup(c: &Ctx) -> Result<()> {
     for exe in BCRYPT_EXES {
         reg += &format!("[HKEY_CURRENT_USER\\Software\\Wine\\AppDefaults\\{exe}\\DllOverrides]\r\n\"bcrypt\"=\"native,builtin\"\r\n\r\n");
     }
-    // Игре — ещё и наш прокси d3d12 (shim фазы 2).
+    // Игре — ещё и наши прокси d3d12 (пайплайны, шейдеры) и dxgi (время кадра).
     if let Some(exe) = &c.game.exe {
         reg += &format!(
-            "[HKEY_CURRENT_USER\\Software\\Wine\\AppDefaults\\{exe}\\DllOverrides]\r\n\"bcrypt\"=\"native,builtin\"\r\n\"d3d12\"=\"native,builtin\"\r\n\r\n"
+            "[HKEY_CURRENT_USER\\Software\\Wine\\AppDefaults\\{exe}\\DllOverrides]\r\n\"bcrypt\"=\"native,builtin\"\r\n\"d3d12\"=\"native,builtin\"\r\n\"dxgi\"=\"native,builtin\"\r\n\r\n"
         );
     }
     let reg_file = c.prefix.join("drive_c/grace/grace-oracle.reg");
@@ -160,9 +174,11 @@ fn install_shims(c: &Ctx) -> Result<()> {
             copy(&bcrypt, &dir.join("bcrypt.dll"))?;
         }
     }
-    let d3d12 = c.root.join(SHIM_TARGET).join("d3d12.dll");
-    if d3d12.exists() && c.game.sandbox_dir.exists() {
-        copy(&d3d12, &c.game.sandbox_dir.join("d3d12.dll"))?;
+    for proxy in GAME_PROXIES {
+        let built = c.root.join(SHIM_TARGET).join(proxy);
+        if built.exists() && c.game.sandbox_dir.exists() {
+            copy(&built, &c.game.sandbox_dir.join(proxy))?;
+        }
     }
     if let Some(id) = c.game.steam_appid {
         std::fs::write(c.game.sandbox_dir.join("steam_appid.txt"), id.to_string())?;
@@ -204,14 +220,24 @@ fn start_steam(c: &Ctx, ui: bool) -> Result<()> {
     Ok(())
 }
 
-fn run(c: &Ctx, hud: bool, shim: bool, overrides: bool) -> Result<()> {
+struct RunOpts {
+    hud: bool,
+    shim: bool,
+    overrides: bool,
+    /// Метка прогона для журнала кадров (`.local/frametimes/<игра>/<метка>.csv`).
+    label: Option<String>,
+}
+
+fn run(c: &Ctx, opts: RunOpts) -> Result<()> {
+    let RunOpts { hud, shim, overrides, label } = opts;
     install_shims(c)?;
-    // Без shim: убираем наш d3d12.dll из песочницы — override native,builtin
-    // тогда откатывается на builtin D3DMetal. Для сравнения стабильности и FPS «с/без».
+    // Без shim: убираем наш d3d12.dll из песочницы — override native,builtin откатывается
+    // на builtin D3DMetal. dxgi-прокси оставляем: он только меряет время кадра,
+    // и сравнение «с/без» тогда честное — меряется одинаково.
     let proxy = c.game.sandbox_dir.join("d3d12.dll");
     if !shim && proxy.exists() {
         std::fs::remove_file(&proxy)?;
-        println!("shim d3d12 отключён для этого запуска");
+        println!("shim d3d12 отключён для этого запуска (журнал кадров остаётся)");
     }
     let exe = c.game.exe.clone().with_context(|| format!("в [games.{}] нет exe", c.game_key))?;
     if !steam_running(c) {
@@ -238,8 +264,18 @@ fn run(c: &Ctx, hud: bool, shim: bool, overrides: bool) -> Result<()> {
         cmd.env("GRACE_SHADER_OVERRIDE", format!("Z:{}", ov.display()).replace('/', "\\"));
         println!("подмен шейдеров: {n} ({})", ov.display());
     }
+    // Журнал времени кадра (dxgi-прокси).
+    let label = label.unwrap_or_else(|| {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        format!("run-{secs}")
+    });
+    let frames_dir = c.local.join("frametimes").join(&c.game_key);
+    std::fs::create_dir_all(&frames_dir)?;
+    let frames_csv = frames_dir.join(format!("{label}.csv"));
+    cmd.env("GRACE_FRAMETIME_LOG", format!("Z:{}", frames_csv.display()).replace('/', "\\"));
     cmd.stdout(log.try_clone()?).stderr(log).spawn().context("запуск игры")?;
     println!("{exe} запущен из {}", c.game.sandbox_dir.display());
+    println!("журнал кадров: {} (отчёт: cargo xtask bench {})", frames_csv.display(), frames_csv.display());
     Ok(())
 }
 

@@ -1,0 +1,17 @@
+[package]
+name = "dxgi-proxy"
+description = "Shim Elder Grace внутри Wine: прокси dxgi.dll — перехват Present, журнал времени кадра, живая статистика"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "dxgi"
+crate-type = ["cdylib"]
+
+[dependencies]
+grace-proto.workspace = true
+
+[lints]
+workspace = true

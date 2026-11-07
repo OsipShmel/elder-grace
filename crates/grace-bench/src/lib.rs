@@ -9,6 +9,8 @@
 
 use std::path::Path;
 
+pub mod trace;
+
 use anyhow::{Context, Result, bail};
 
 #[derive(Debug, Clone)]

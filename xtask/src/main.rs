@@ -4,6 +4,7 @@
 //! `cargo xtask shaders [игра]` — корпус шейдеров: сводка → DXIL→metallib → проверка в Metal.
 //! `cargo xtask overrides [игра]` — собрать подмены шейдеров из `../grace-<игра>/shaders/overrides/*.hlsl`.
 //! `cargo xtask bench <журнал|метка> [<журнал2|метка2>] [--skip сек] [--game игра]` — отчёт по времени кадра.
+//! `cargo xtask trace [--seconds N] [--label L] [--game игра]` — Metal System Trace запущенной игры + вердикт CPU/GPU.
 
 mod oracle;
 
@@ -22,6 +23,7 @@ fn main() -> Result<()> {
         Some("shaders") => shaders(args.get(1).map_or("eldenring", String::as_str)),
         Some("overrides") => overrides(args.get(1).map_or("eldenring", String::as_str)),
         Some("bench") => bench(&args[1..]),
+        Some("trace") => trace(&args[1..]),
         _ => bail!("использование: cargo xtask bundle [--debug] | shim [--release] | oracle …"),
     }
 }
@@ -241,4 +243,44 @@ fn bench(args: &[String]) -> Result<()> {
     let mut cmd = vec!["run".to_string(), "-q".into(), "--release".into(), "-p".into(), "grace-bench".into(), "--".into()];
     cmd.extend(pass);
     cargo(&cmd.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// Metal System Trace запущенной под эталоном игры и разбор: CPU- или GPU-bound.
+fn trace(args: &[String]) -> Result<()> {
+    let opt = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+    let game = opt("--game").unwrap_or_else(|| "eldenring".into());
+    let seconds = opt("--seconds").unwrap_or_else(|| "15".into());
+    let label = opt("--label").unwrap_or_else(|| {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        format!("trace-{secs}")
+    });
+    let project = root().parent().context("корень ProjectPort")?.to_owned();
+    let cfg = grace_core::config::LocalConfig::discover(&root())?;
+    let exe = cfg.games.get(&game).and_then(|g| g.exe.clone()).with_context(|| format!("в [games.{game}] нет exe"))?;
+
+    // Процесс игры под Wine: wine64-preloader с именем exe в командной строке.
+    let ps = Command::new("ps").args(["-axo", "pid=,command="]).output()?;
+    let pid = String::from_utf8_lossy(&ps.stdout)
+        .lines()
+        .find(|l| l.contains("wine64-preloader") && l.contains(exe.as_str()))
+        .and_then(|l| l.split_whitespace().next().map(str::to_owned))
+        .with_context(|| format!("{exe} не запущен — cargo xtask oracle run"))?;
+
+    let dir = project.join(".local/traces").join(&game);
+    std::fs::create_dir_all(&dir)?;
+    let out = dir.join(format!("{label}.trace"));
+    if out.exists() {
+        bail!("{} уже есть — задай другую --label", out.display());
+    }
+    println!("запись Metal System Trace: {exe} (pid {pid}), {seconds} с → {}", out.display());
+    let status = Command::new("xcrun")
+        .args(["xctrace", "record", "--template", "Metal System Trace", "--attach", &pid, "--time-limit", &format!("{seconds}s", seconds = seconds.trim_end_matches('s')), "--output"])
+        .arg(&out)
+        .stdout(std::process::Stdio::null())
+        .status()?;
+    if !status.success() {
+        bail!("xctrace record завершился с ошибкой");
+    }
+    let out_s = out.to_string_lossy().into_owned();
+    cargo(&["run", "-q", "--release", "-p", "grace-bench", "--", "trace", &out_s, "--pid", &pid])
 }

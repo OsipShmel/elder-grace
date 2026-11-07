@@ -18,6 +18,7 @@
 - Apple Metal Shader Converter — `libmetalirconverter.dylib` из D3DMetal внутри GPTK; вызывается `tools/grace-irconv` через `dlopen`, в репозитории его нет.
 - SPIRV-Cross 1.4.363.0 (Homebrew, Apache-2.0) — ветка DXBC → SPIR-V → MSL в `cargo xtask shaders`, вызывается как внешняя программа.
 - vkd3d 1.19 (WineHQ, LGPL-2.1) — исходники в `.local/tools/src` (sha256 `034613605baab8ba84674f8d272cf22b5e86bc6bc03fc5728ef9bce07308baa6`), собран локально, `vkd3d-compiler` вызывается как внешняя программа (не линкуется в наш код).
+- DirectXShaderCompiler v1.9.2609 (Microsoft, LLVM Release License — University of Illinois/NCSA, плюс сабмодули DirectX-Headers MIT, SPIRV-Headers/SPIRV-Tools Apache-2.0) — исходники в `.local/src/dxc` (тег `v1.9.2609`, коммит `01b62ad4`), собран локально; `dxc`, `dxa`, `dxv` и `libdxcompiler.dylib` в `.local/tools`, вызываются как внешние программы (не линкуются в наш код). Сборка — с разрешения пользователя 2026-11-08; Homebrew `ninja` (Apache-2.0).
 - Homebrew для сборки vkd3d: bison, flex, spirv-headers, vulkan-headers, molten-vk (Apache-2.0).
 
 Инструменты разработки без распространения (только локально): CrossOver, Apple Game Porting Toolkit (D3DMetal), Apple Metal Shader Converter, Xcode/Instruments. В репозиторий и сборки не попадают.

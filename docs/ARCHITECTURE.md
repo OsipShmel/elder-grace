@@ -128,6 +128,16 @@ docs/
 - **Подмены на лету** (`live.rs`, `recipes.rs`): для пайплайна с подменой создаются два PSO — оригинал (его получает игра) и подменённый; таблица пар без блокировок на чтение. Командным спискам (`CreateCommandList` 12, `CreateCommandList1` 51 у ID3D12Device4) подставляется копия vtable (96 слотов; на индексе −1 — адрес исходной, поэтому вариантов vtable может быть несколько) с перехватом `QueryInterface` 0, `Reset` 10, `ClearState` 11, `SetPipelineState` 25. Номера сверены с `d3d12.h` из mingw-w64.
 - **Перезагрузка с диска:** при заданном `GRACE_SHADER_OVERRIDE` для каждого PSO (устройство и библиотека) пишется рецепт — глубокая копия описания без байткода (хеши стадий; input layout, stream output, view instancing со своими строками; CachedPSO обнулён), ~1 КБ. PSO и корневой сигнатуре добавляется ссылка: адрес не переиспользуется, пару можно поставить в любой момент. `reload` перечитывает подмены и пересоздаёт подменённые PSO на устройстве игры: исходный байткод — из дампа, новый — из подмен. Старые подменённые PSO не освобождаются (могут быть в полёте на GPU).
 - Управление: TCP `127.0.0.1:47322` (`GRACE_D3D12_PORT`), `grace-ctl overrides [status|on|off|toggle|reload]`, `cargo xtask overrides --reload`.
+- **Что рисует кадр:** `grace-ctl bound [--ms 1000] [--ps] [--top N]` — shim на время окна записывает привязки PSO в командных списках и сводит их по шейдерам рецептов (хеш.стадия, число привязок, DXIL/DXBC). Так выбирается, что подменять.
+
+### Подмены шейдеров — виды источников (`xtask/src/overrides.rs`)
+Файл `../grace-<игра>/shaders/overrides/<хеш>.<стадия>.<вид>`, хеш — fnv64 оригинала из дампа:
+- `.hlsl` — полная замена: DXBC-оригинал → vkd3d `<стадия>_5_0`, DXIL → dxc с моделью оригинала.
+- `.irpatch` — правка **оригинального DXIL без исходников**: `dxc -dumpbin` → операции над `dx.op.storeOutput.f32` (`output <id> mul|add x [y z w]`) → `dxa` → `dxv`. В git только патч; сгенерированный `.ll` — в `.local/shaders/<игра>-override-src/` (дизассемблированный код игры — игровые данные, правило 3).
+- `.local/shaders/<игра>-override-ll/<хеш>.<стадия>.ll` — свободная ручная правка IR, только локально.
+- После сборки — сверка сигнатур входов/выходов с оригиналом (предупреждение при расхождении); подмены без источника удаляются из `.local/shaders/<игра>-override/`.
+- Проверено: дизассемблированный DXIL игры собирается обратно `dxa` и проходит `dxv`; из контейнера пропадают только `RTS0` (корневая сигнатура берётся из описания PSO) и `ILDN`.
+- Справка: `cargo xtask shader <хеш>.<стадия> [--ir]` (имя, сигнатуры с номерами, ресурсы, дизассемблер), поиск по имени — `grace-shader names <дамп> <подстрока>`.
 
 ### Shim `dxgi.dll` (`shim/dxgi-proxy`) и замеры — фаза 1
 - Прокси dxgi (ординалы как у GPTK, `.def` из `build.rs`). Копии vtable фабрики (`QueryInterface` 0, `CreateSwapChain` 10, `CreateSwapChainForHwnd` 15) и swapchain (`QueryInterface` 0, `Present` 8, `Present1` 22). `Present` с `DXGI_PRESENT_TEST` не считается.
@@ -142,6 +152,7 @@ docs/
 3. `grace-shader metallib` — нативная (arm64) загрузка каждого `metallib` в `MTLDevice` и создание функций.
 4. DXBC SM4/5 → SPIR-V (`vkd3d-compiler` 1.19, собран из исходников в `.local/tools/bin`) → MSL (SPIRV-Cross `--msl-version 30000`) → `xcrun metal` + `metallib`. Промежуточные `.spv`/`.metal`/`.air` — в `.local/shaders/<игра>-msl/`.
 5. Сборка vkd3d (один раз): исходники с dl.winehq.org → `./configure --prefix=<ProjectPort>/.local/tools --disable-tests --disable-doxygen-doc BISON=/opt/homebrew/opt/bison/bin/bison LEX=/opt/homebrew/opt/flex/bin/flex CPPFLAGS=-I/opt/homebrew/include LDFLAGS=-L/opt/homebrew/lib` → полный `make` (целевой `make vkd3d-compiler` пропускает генерацию заголовков) → `make install`. Нужны из Homebrew: `bison`, `flex`, `spirv-headers`, `vulkan-headers`, `molten-vk` (только для `configure`), `spirv-cross`.
+5а. Сборка dxc (один раз, ~10 мин на M5 Pro): `git clone --depth 1 --branch v1.9.2609 --recurse-submodules --shallow-submodules https://github.com/microsoft/DirectXShaderCompiler.git .local/src/dxc` → `cmake -S . -B build -G Ninja -C cmake/caches/PredefinedParams.cmake -DCMAKE_BUILD_TYPE=Release -DHLSL_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_TESTS=OFF -DCLANG_INCLUDE_TESTS=OFF -DSPIRV_BUILD_TESTS=OFF` → `ninja -C build dxc dxa dxv` → скопировать `build/bin/{dxc,dxa,dxv}-3.7` в `.local/tools/bin/{dxc,dxa,dxv}` и `build/lib/libdxcompiler.dylib` в `.local/tools/lib/`. Нужны `cmake`, `ninja` (Homebrew). Встроенный валидатор подписывает DXIL (хеш в контейнере ненулевой) — `dxil.dll` не нужен.
 6. Пока это **проверка компилируемости**: привязки ресурсов (корневая сигнатура D3D12 → аргументы Metal) не сопоставлены, шейдеры ещё не рисуют. Это следующий шаг к C1/C2.
 - Корпус: каждый шейдер по хешу, метаданные (стадия, проход, стоимость из захватов).
 - Трансляция в читаемый вид и обратно — инструменты подбираем на фазе 3 (кандидаты в `REFERENCES.md`).

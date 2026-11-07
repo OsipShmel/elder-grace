@@ -8,18 +8,43 @@
 
 **Работает (всё проверено):**
 - Эталон на GPTK 3.0-3 одной командой: `cargo xtask oracle setup|steam [--ui]|run [--label L] [--no-shim] [--no-overrides]|status|kill`. Windows-Steam в префиксе поднят нашими compat-shim'ами для Wine 7.7 (bcrypt: псевдо-хендлы; realtime: `Query*InterruptTime*`; winsock: `getsockname` после `AcceptEx`; TCP-реестр владельцев для `GetExtendedTcpTable`; запасной `GetProcAddress`; общий IAT-патчер). Пользователь залогинен, сессия запомнена. `crash-probe` — отладчик падений вместо `winedbg`.
-- Shim `d3d12.dll` в игре: копии vtable устройства и библиотеки пайплайнов; дамп шейдеров (корпус 5988, 99,5% DXIL 6.0); **подмена шейдеров** (`GRACE_SHADER_OVERRIDE`, HLSL в `grace-eldenring/shaders/overrides/`, `cargo xtask overrides`) — текст меню золотой, подтверждено пользователем. В ветке `feat/live-overrides`: `grace-ctl overrides on|off|toggle|reload` и `cargo xtask overrides --reload` — правка HLSL видна в игре через ~2 с без перезапуска.
+- Shim `d3d12.dll` в игре: копии vtable устройства и библиотеки пайплайнов; дамп шейдеров (корпус 5988, 99,5% DXIL 6.0); **подмена шейдеров** (`GRACE_SHADER_OVERRIDE`, HLSL в `grace-eldenring/shaders/overrides/`, `cargo xtask overrides`) — текст меню золотой, подтверждено пользователем. В ветке `feat/live-overrides`: `grace-ctl overrides on|off|toggle|reload` и `cargo xtask overrides --reload` — правка HLSL видна в игре через ~2 с без перезапуска. В `feat/dxil-overrides`: правка оригинального DXIL (`.irpatch`), dxc, поиск шейдеров по имени, `grace-ctl bound`.
 - Конвейер шейдеров `cargo xtask shaders`: DXIL → metallib (Metal Shader Converter из GPTK, `tools/grace-irconv` под Rosetta), DXBC → vkd3d → SPIRV-Cross → metallib; 5988/5988 грузятся в Metal (M5 Pro). Это компилируемость, не рендер.
 - Замеры: shim `dxgi.dll` (время кадра из `Present`), `cargo xtask bench`, `cargo xtask trace` (Metal System Trace + вердикт CPU/GPU), `grace-ctl --shim watch`.
 
 **Базовая линия (world-base, макс. настройки):** открытый мир 25–46 FPS, подземелье ~60 (лимит игры). В мире GPU занят 63–71%, главный поток 66–70% ядра, ~60 command buffer на кадр → ни GPU, ни CPU не насыщены, кадр теряется на взаимном ожидании. Подробно — `grace-eldenring/docs/BASELINE.md`. Следующий диагностический шаг — какие именно ожидания (thread states/Time Profiler).
 
-**▶ Готово к мержу: ветка `feat/live-overrides`** (в `elder-grace`, коммиты агента, мержит пользователь). Подмены шейдеров включаются/выключаются и **перезагружаются с диска в живой игре** без перезапуска — см. запись «Сессия 3» ниже. Осталось за пользователем: посмотреть руками, `bench` «вкл/выкл» в открытом мире (на титульном экране упор в 60 FPS, сравнивать нечего), мерж.
+**▶ Ветки к мержу (коммиты агента, мержит пользователь):**
+- `feat/live-overrides` — подмены on/off/reload в живой игре (Сессия 3, проверено в игре).
+- `feat/dxil-overrides` — **поверх** `feat/live-overrides` (мержить после неё или вместо обеих — её одну): dxc/dxa/dxv, `.irpatch`, `cargo xtask shader`, `grace-shader names`, `grace-ctl bound` (Сессия 4). Проверено без игры; **в игре не проверено** — чек-лист в записи Сессии 4.
 
 **Отложено, нужен пользователь:** разбор ожиданий CPU/GPU в мире — трейс с потоковыми состояниями (шаблон `System Trace` или `Time Profiler`; добавить в `cargo xtask trace` опцию `--template`), снимать, пока пользователь бежит по открытому миру.
 
 **Дальше по договорённости:** мелкое — прямо в `main` (коммитит агент); крупное — в feat-ветках (коммитит агент, мержит пользователь): `feat/live-overrides` (подмены через `grace-ctl` на лету), `feat/dxil-overrides` (сборка dxc, подмены DXIL). Не пушить, не мержить в main без пользователя.
 
+
+---
+
+## 2026-11-08 — Сессия 4: DXIL-подмены — ветка `feat/dxil-overrides` (поверх `feat/live-overrides`)
+
+**Сделано:**
+- dxc v1.9.2609 собран из исходников (разрешение пользователя «Собирать dxc»), `dxc`/`dxa`/`dxv` + `libdxcompiler.dylib` в `.local/tools`; рецепт — ARCHITECTURE, лицензия — THIRD_PARTY.
+- `grace-shader`: сигнатуры ISG1/OSG1 (DXIL), отладочное имя из `ILDN`, `names <дамп> [подстрока]`; тест на синтетическом контейнере.
+- `xtask/src/overrides.rs`: `.hlsl` → vkd3d или dxc по типу оригинала; **`.irpatch`** — правка оригинального DXIL без исходников (dumpbin → `storeOutput` × константа → dxa → dxv); сверка сигнатур; удаление устаревших подмен; `cargo xtask shader <id> [--ir]`. 2 теста патчера.
+- shim d3d12 + `grace-ctl bound [--ms] [--ps]` — какие шейдеры привязаны за окно (по рецептам PSO).
+- `grace-eldenring`: `shaders/overrides/1f57f44ecec2766b.ps.irpatch` — холодный оттенок у `ToneMap_TabledToneMapPS` (коммит в `main` игры `4b832c3`); FORMATS — отладочные имена шейдеров.
+
+**Как проверено (без игры):**
+- dxc читает DXIL игры (`-dumpbin`), HLSL → DXIL подписан (хеш ненулевой); тестовый DXIL и **пропатченный тонмаппинг игры** проходят Metal Shader Converter (`grace-irconv`) и нативно грузятся в Metal (M5 Pro, 1/1). Тот же конвертер использует D3DMetal — ожидаю, что игра примет.
+- Круг «дизассемблер → dxa → dxv» на тонмаппинге: `Validation succeeded`, сигнатуры совпали.
+- `cargo test -p grace-shader -p xtask -p grace-proto` зелёные, clippy по изменённым крейтам чистый.
+
+**Не проверено — чек-лист на завтра (нужен пользователь: войти в Steam):**
+1. `cargo xtask oracle steam` → дождаться «Steam: в сети» в `cargo xtask oracle status` (сегодня Steam не вошёл: таймауты серверов, не наш код), затем `cargo xtask oracle run --label dxil-1`.
+2. На титульном экране: `grace-ctl overrides` (ожидаю 2 файла, пары PSO), `grace-ctl bound --ps` — есть ли `1f57f44ecec2766b.ps` в кадре. Если нет — загрузить сохранение и повторить в мире.
+3. Холодный оттенок кадра виден при `on`, пропадает при `off`; если D3DMetal отверг PSO — в статусе «не создано N», игра работает с оригиналом.
+4. Скорость перехвата: `bench` вкл/выкл в открытом мире.
+- Игра закрыта (`oracle kill`), Steam в префиксе тоже.
 
 ---
 

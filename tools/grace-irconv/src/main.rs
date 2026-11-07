@@ -26,6 +26,16 @@ unsafe extern "C" {
 
 type Ptr = *mut c_void;
 
+/// Адрес символа → указатель на функцию типа поля `Ir` (тип выводится из поля).
+///
+/// # Safety
+/// `F` — указатель на функцию с той же сигнатурой, что у символа.
+unsafe fn func<F: Copy>(p: Ptr) -> F {
+    assert_eq!(std::mem::size_of::<F>(), std::mem::size_of::<Ptr>());
+    // SAFETY: размеры равны; совместимость сигнатуры — по контракту функции.
+    unsafe { std::mem::transmute_copy(&p) }
+}
+
 /// Функции C API Metal Shader Converter, нужные для DXIL → metallib.
 struct Ir {
     compiler_create: unsafe extern "C" fn() -> Ptr,
@@ -63,19 +73,19 @@ impl Ir {
         // SAFETY: сигнатуры по metal_irconverter.h (Metal Shader Converter).
         unsafe {
             Ok(Self {
-                compiler_create: std::mem::transmute::<Ptr, _>(sym("IRCompilerCreate")?),
-                compiler_destroy: std::mem::transmute::<Ptr, _>(sym("IRCompilerDestroy")?),
-                object_from_dxil: std::mem::transmute::<Ptr, _>(sym("IRObjectCreateFromDXIL")?),
-                compile_and_link: std::mem::transmute::<Ptr, _>(sym("IRCompilerAllocCompileAndLink")?),
-                object_stage: std::mem::transmute::<Ptr, _>(sym("IRObjectGetMetalIRShaderStage")?),
-                object_metallib: std::mem::transmute::<Ptr, _>(sym("IRObjectGetMetalLibBinary")?),
-                object_destroy: std::mem::transmute::<Ptr, _>(sym("IRObjectDestroy")?),
-                metallib_create: std::mem::transmute::<Ptr, _>(sym("IRMetalLibBinaryCreate")?),
-                metallib_destroy: std::mem::transmute::<Ptr, _>(sym("IRMetalLibBinaryDestroy")?),
-                metallib_size: std::mem::transmute::<Ptr, _>(sym("IRMetalLibGetBytecodeSize")?),
-                metallib_bytes: std::mem::transmute::<Ptr, _>(sym("IRMetalLibGetBytecode")?),
-                error_code: std::mem::transmute::<Ptr, _>(sym("IRErrorGetCode")?),
-                error_destroy: std::mem::transmute::<Ptr, _>(sym("IRErrorDestroy")?),
+                compiler_create: func(sym("IRCompilerCreate")?),
+                compiler_destroy: func(sym("IRCompilerDestroy")?),
+                object_from_dxil: func(sym("IRObjectCreateFromDXIL")?),
+                compile_and_link: func(sym("IRCompilerAllocCompileAndLink")?),
+                object_stage: func(sym("IRObjectGetMetalIRShaderStage")?),
+                object_metallib: func(sym("IRObjectGetMetalLibBinary")?),
+                object_destroy: func(sym("IRObjectDestroy")?),
+                metallib_create: func(sym("IRMetalLibBinaryCreate")?),
+                metallib_destroy: func(sym("IRMetalLibBinaryDestroy")?),
+                metallib_size: func(sym("IRMetalLibGetBytecodeSize")?),
+                metallib_bytes: func(sym("IRMetalLibGetBytecode")?),
+                error_code: func(sym("IRErrorGetCode")?),
+                error_destroy: func(sym("IRErrorDestroy")?),
             })
         }
     }

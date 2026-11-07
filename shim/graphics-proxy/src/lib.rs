@@ -9,6 +9,8 @@
 //!   `CreateComputePipelineState`, `CreatePipelineState` (поток подобъектов, ID3D12Device2).
 //! - Каждый шейдер пайплайна пишется в каталог `GRACE_SHADER_DUMP` как
 //!   `<fnv64>.<стадия>.dxbc` (без повторов); сводка — в `_stats.txt` там же.
+//! - Подмены шейдеров (`overrides.rs`) включаются и выключаются на лету (`live.rs`):
+//!   командным спискам подставляется своя vtable, управление по TCP 47322.
 
 #![cfg(all(windows, target_arch = "x86_64"))]
 #![allow(non_snake_case, clippy::missing_safety_doc)]
@@ -18,6 +20,7 @@ use std::io::Write as _;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+mod live;
 mod overrides;
 
 /// Версия протокола shim ↔ рантайм (совпадает с `grace_proto::PROTOCOL_VERSION`).
@@ -138,8 +141,68 @@ static ORIG_COMPUTE: AtomicUsize = AtomicUsize::new(0);
 static ORIG_STREAM: AtomicUsize = AtomicUsize::new(0);
 static ORIG_QI: AtomicUsize = AtomicUsize::new(0);
 static ORIG_LIBRARY: AtomicUsize = AtomicUsize::new(0);
+static ORIG_CREATE_LIST: AtomicUsize = AtomicUsize::new(0);
+static ORIG_CREATE_LIST1: AtomicUsize = AtomicUsize::new(0);
 const SLOT_QI: usize = 0;
 const SLOT_LIBRARY: usize = 44;
+/// ID3D12Device::CreateCommandList (d3d12.h).
+const SLOT_CREATE_LIST: usize = 12;
+/// ID3D12Device4::CreateCommandList1 (d3d12.h).
+const SLOT_CREATE_LIST1: usize = 51;
+/// IID_ID3D12Device4 {e865df17-a9ee-46f9-a463-3098315aa2e5}.
+const IID_DEVICE4: [u8; 16] = live::guid(0xe865df17, 0xa9ee, 0x46f9, [0xa4, 0x63, 0x30, 0x98, 0x31, 0x5a, 0xa2, 0xe5]);
+
+unsafe extern "system" fn hooked_create_list(
+    this: *mut c_void,
+    node_mask: u32,
+    ty: u32,
+    allocator: *mut c_void,
+    initial: *mut c_void,
+    riid: *const [u8; 16],
+    out: *mut *mut c_void,
+) -> i32 {
+    type F = unsafe extern "system" fn(*mut c_void, u32, u32, *mut c_void, *mut c_void, *const [u8; 16], *mut *mut c_void) -> i32;
+    // SAFETY: оригинал записан при установке хука.
+    let orig: F = unsafe { std::mem::transmute(ORIG_CREATE_LIST.load(Ordering::Acquire)) };
+    let hr = unsafe { orig(this, node_mask, ty, allocator, live::initial_pso(initial), riid, out) };
+    if hr >= 0 && !out.is_null() {
+        // SAFETY: при успехе *out — командный список.
+        unsafe { live::adopt_command_list(*out) };
+    }
+    hr
+}
+
+unsafe extern "system" fn hooked_create_list1(this: *mut c_void, node_mask: u32, ty: u32, flags: u32, riid: *const [u8; 16], out: *mut *mut c_void) -> i32 {
+    type F = unsafe extern "system" fn(*mut c_void, u32, u32, u32, *const [u8; 16], *mut *mut c_void) -> i32;
+    // SAFETY: оригинал записан при установке хука.
+    let orig: F = unsafe { std::mem::transmute(ORIG_CREATE_LIST1.load(Ordering::Acquire)) };
+    let hr = unsafe { orig(this, node_mask, ty, flags, riid, out) };
+    if hr >= 0 && !out.is_null() {
+        // SAFETY: при успехе *out — командный список.
+        unsafe { live::adopt_command_list(*out) };
+    }
+    hr
+}
+
+/// Создаёт подменённый PSO вторым и регистрирует пару с оригиналом, который уже у игры.
+///
+/// # Safety
+/// `out` — выходной указатель успешного вызова создания PSO, `create` создаёт подменённый.
+unsafe fn make_pair(out: *mut *mut c_void, create: impl FnOnce(*mut *mut c_void) -> i32) {
+    if out.is_null() {
+        return;
+    }
+    // SAFETY: вызывающий передал out успешного вызова.
+    let orig = unsafe { *out };
+    let mut over = std::ptr::null_mut();
+    let hr = create(&mut over);
+    if hr >= 0 && !over.is_null() {
+        unsafe { live::register(orig, over) };
+    } else {
+        live::note_failed();
+        debug(&format!("подменённый PSO не создан ({hr:#x}), игра работает с оригиналом"));
+    }
+}
 
 /// Диагностика: какие интерфейсы игра просит у устройства и тот же ли объект ей отдают.
 unsafe extern "system" fn hooked_qi(this: *mut c_void, riid: *const [u8; 16], out: *mut *mut c_void) -> i32 {
@@ -359,6 +422,12 @@ unsafe fn hook_device(dev: *mut c_void) {
     if !d2.is_null() {
         unsafe { release(d2) };
     }
+    let mut d4 = std::ptr::null_mut();
+    let hr = unsafe { qi(dev, &IID_DEVICE4, &mut d4) };
+    let device4 = hr >= 0 && d4 == dev;
+    if !d4.is_null() {
+        unsafe { release(d4) };
+    }
 
     // SAFETY: читаем VTBL_SLOTS указателей из vtable (константные данные фреймворка).
     let mut clone: Box<[usize; VTBL_SLOTS]> = Box::new([0; VTBL_SLOTS]);
@@ -370,6 +439,10 @@ unsafe fn hook_device(dev: *mut c_void) {
     set(SLOT_QI, hooked_qi as *const () as usize, &ORIG_QI);
     set(SLOT_GRAPHICS, hooked_graphics as *const () as usize, &ORIG_GRAPHICS);
     set(SLOT_COMPUTE, hooked_compute as *const () as usize, &ORIG_COMPUTE);
+    set(SLOT_CREATE_LIST, hooked_create_list as *const () as usize, &ORIG_CREATE_LIST);
+    if device4 {
+        set(SLOT_CREATE_LIST1, hooked_create_list1 as *const () as usize, &ORIG_CREATE_LIST1);
+    }
     if stream {
         set(SLOT_LIBRARY, hooked_library as *const () as usize, &ORIG_LIBRARY);
         set(SLOT_STREAM, hooked_stream as *const () as usize, &ORIG_STREAM);
@@ -378,7 +451,12 @@ unsafe fn hook_device(dev: *mut c_void) {
     ORIG_VTBL.store(vtbl as usize, Ordering::Release);
     CLONED_VTBL.store(clone.as_ptr() as usize, Ordering::Release);
     unsafe { adopt(dev) };
-    debug(&format!("устройству подставлена своя vtable (потоковые PSO: {})", if stream { "да" } else { "нет" }));
+    debug(&format!(
+        "устройству подставлена своя vtable (потоковые PSO: {}, CreateCommandList1: {})",
+        if stream { "да" } else { "нет" },
+        if device4 { "да" } else { "нет" }
+    ));
+    live::start_control();
 }
 
 unsafe extern "system" fn hooked_graphics(this: *mut c_void, desc: *const u8, riid: *const [u8; 16], out: *mut *mut c_void) -> i32 {
@@ -392,12 +470,14 @@ unsafe extern "system" fn hooked_graphics(this: *mut c_void, desc: *const u8, ri
     }
     // SAFETY: оригинал записан при установке хука.
     let orig: CreatePso = unsafe { std::mem::transmute(ORIG_GRAPHICS.load(Ordering::Acquire)) };
-    if !desc.is_null()
+    let hr = unsafe { orig(this, desc, riid, out) };
+    if hr >= 0
+        && !desc.is_null()
         && let Some(copy) = unsafe { overrides::graphics_copy(desc) }
     {
-        return unsafe { orig(this, copy.as_ptr(), riid, out) };
+        unsafe { make_pair(out, |o| orig(this, copy.as_ptr(), riid, o)) };
     }
-    unsafe { orig(this, desc, riid, out) }
+    hr
 }
 
 unsafe extern "system" fn hooked_compute(this: *mut c_void, desc: *const u8, riid: *const [u8; 16], out: *mut *mut c_void) -> i32 {
@@ -408,36 +488,39 @@ unsafe extern "system" fn hooked_compute(this: *mut c_void, desc: *const u8, rii
     }
     // SAFETY: оригинал записан при установке хука.
     let orig: CreatePso = unsafe { std::mem::transmute(ORIG_COMPUTE.load(Ordering::Acquire)) };
-    if !desc.is_null()
+    let hr = unsafe { orig(this, desc, riid, out) };
+    if hr >= 0
+        && !desc.is_null()
         && let Some(copy) = unsafe { overrides::compute_copy(desc) }
     {
-        return unsafe { orig(this, copy.as_ptr(), riid, out) };
+        unsafe { make_pair(out, |o| orig(this, copy.as_ptr(), riid, o)) };
     }
-    unsafe { orig(this, desc, riid, out) }
+    hr
 }
 
 unsafe extern "system" fn hooked_stream(this: *mut c_void, desc: *const u8, riid: *const [u8; 16], out: *mut *mut c_void) -> i32 {
-    if !desc.is_null() {
-        // D3D12_PIPELINE_STATE_STREAM_DESC { SIZE_T SizeInBytes; void* pPipelineStateSubobjectStream; }
-        // SAFETY: структура из двух полей по 8 байт.
-        let (size, stream) = unsafe { (*(desc as *const usize), *(desc.add(8) as *const *const u8)) };
-        if !stream.is_null() {
-            unsafe { parse_stream(stream, size) };
-        }
-        note_pipeline(Kind::Stream);
-        if !stream.is_null()
-            && let Some(copy) = unsafe { overrides::stream_copy(stream, size) }
-        {
-            // Новое D3D12_PIPELINE_STATE_STREAM_DESC на нашу копию потока.
-            let new_desc: [usize; 2] = [size, copy.as_ptr() as usize];
-            // SAFETY: оригинал записан при установке хука.
-            let orig: CreatePso = unsafe { std::mem::transmute(ORIG_STREAM.load(Ordering::Acquire)) };
-            return unsafe { orig(this, new_desc.as_ptr().cast(), riid, out) };
-        }
-    }
     // SAFETY: оригинал записан при установке хука.
     let orig: CreatePso = unsafe { std::mem::transmute(ORIG_STREAM.load(Ordering::Acquire)) };
-    unsafe { orig(this, desc, riid, out) }
+    if desc.is_null() {
+        return unsafe { orig(this, desc, riid, out) };
+    }
+    // D3D12_PIPELINE_STATE_STREAM_DESC { SIZE_T SizeInBytes; void* pPipelineStateSubobjectStream; }
+    // SAFETY: структура из двух полей по 8 байт.
+    let (size, stream) = unsafe { (*(desc as *const usize), *(desc.add(8) as *const *const u8)) };
+    if !stream.is_null() {
+        unsafe { parse_stream(stream, size) };
+    }
+    note_pipeline(Kind::Stream);
+    let hr = unsafe { orig(this, desc, riid, out) };
+    if hr >= 0
+        && !stream.is_null()
+        && let Some(copy) = unsafe { overrides::stream_copy(stream, size) }
+    {
+        // Новое D3D12_PIPELINE_STATE_STREAM_DESC на нашу копию потока.
+        let new_desc: [usize; 2] = [size, copy.as_ptr() as usize];
+        unsafe { make_pair(out, |o| orig(this, new_desc.as_ptr().cast(), riid, o)) };
+    }
+    hr
 }
 
 /// (смещение данных от начала подобъекта, размер данных) по типу подобъекта.

@@ -8,6 +8,9 @@
 //!
 //! Загрузку подменённого пайплайна из библиотеки (кэша игры) shim отклоняет как промах:
 //! игра тогда создаёт его через устройство, а там подмена уже срабатывает.
+//!
+//! Игра всегда получает оригинальный PSO; подменённый создаётся вторым и подставляется
+//! в командные списки (`live.rs`), пока подмены включены.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -39,6 +42,23 @@ fn table() -> &'static HashMap<u64, &'static [u8]> {
     })
 }
 
+/// Сколько файлов подмен загружено.
+pub fn loaded() -> usize {
+    table().len()
+}
+
+/// Смещение D3D12_CACHED_PIPELINE_STATE в D3D12_GRAPHICS_PIPELINE_STATE_DESC (x64).
+const GRAPHICS_CACHED_PSO: usize = 632;
+/// То же в D3D12_COMPUTE_PIPELINE_STATE_DESC.
+const COMPUTE_CACHED_PSO: usize = 32;
+/// Тип подобъекта D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CACHED_PSO.
+const SUBOBJECT_CACHED_PSO: u32 = 19;
+
+/// Кэш драйвера собран для исходных шейдеров — в подменённом описании он не годится.
+fn drop_cached_pso(copy: &mut [u8], off: usize) {
+    copy[off..off + 16].fill(0);
+}
+
 /// Подмена для D3D12_SHADER_BYTECODE по адресу `bc`, если есть.
 ///
 /// # Safety
@@ -64,6 +84,7 @@ fn note_applied(hash: u64, stage: &str) {
         && s.get_or_insert_with(HashSet::new).insert(hash)
     {
         debug(&format!("подмена шейдера {hash:016x}.{stage} применена"));
+        crate::live::note_applied(format!("{hash:016x}.{stage}"));
     }
 }
 
@@ -102,6 +123,9 @@ pub unsafe fn graphics_copy(desc: *const u8) -> Option<Box<[u8; GRAPHICS_DESC_SI
             note_applied(hash, stage);
         }
     }
+    if let Some(c) = copy.as_mut() {
+        drop_cached_pso(&mut c[..], GRAPHICS_CACHED_PSO);
+    }
     copy
 }
 
@@ -119,6 +143,7 @@ pub unsafe fn compute_copy(desc: *const u8) -> Option<Box<[u8; COMPUTE_DESC_SIZE
     // SAFETY: описание игры имеет размер COMPUTE_DESC_SIZE.
     unsafe { std::ptr::copy_nonoverlapping(desc, b.as_mut_ptr(), COMPUTE_DESC_SIZE) };
     write_bytecode(&mut b[..], 8, bytes);
+    drop_cached_pso(&mut b[..], COMPUTE_CACHED_PSO);
     note_applied(hash, "cs");
     Some(b)
 }
@@ -158,6 +183,9 @@ pub unsafe fn stream_copy(stream: *const u8, size: usize) -> Option<Vec<u8>> {
             write_bytecode(&mut copy, off + data_off, bytes);
             note_applied(hash, stage);
             changed = true;
+        }
+        if ty == SUBOBJECT_CACHED_PSO {
+            drop_cached_pso(&mut copy, off + data_off);
         }
         off += (data_off + data_size).next_multiple_of(8);
     }

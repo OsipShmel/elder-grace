@@ -6,10 +6,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use grace_proto::{Request, Response, read_message, write_message};
+use grace_proto::{OverrideOp, Request, Response, read_message, write_message};
 
 /// Порт статистики shim'а dxgi внутри игры (см. shim/dxgi-proxy).
 const SHIM_ADDR: &str = "127.0.0.1:47321";
+/// Порт управления подменами shim'а d3d12 внутри игры (см. shim/graphics-proxy/src/live.rs).
+const SHIM_D3D12_ADDR: &str = "127.0.0.1:47322";
 
 #[derive(Parser)]
 #[command(about = "Управление запущенным Elder Grace и shim'ом внутри игры")]
@@ -38,6 +40,30 @@ enum Command {
     Stats,
     /// Печатать статистику раз в секунду (Ctrl+C — выход)
     Watch,
+    /// Подмены шейдеров в игре (shim d3d12, по умолчанию 127.0.0.1:47322)
+    Overrides {
+        #[arg(value_enum, default_value_t = Op::Status)]
+        op: Op,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Op {
+    Status,
+    On,
+    Off,
+    Toggle,
+}
+
+impl From<Op> for OverrideOp {
+    fn from(op: Op) -> Self {
+        match op {
+            Op::Status => OverrideOp::Status,
+            Op::On => OverrideOp::On,
+            Op::Off => OverrideOp::Off,
+            Op::Toggle => OverrideOp::Toggle,
+        }
+    }
 }
 
 trait Conn: BufRead + Send {
@@ -89,7 +115,12 @@ impl Conn for Tcp {
 }
 
 fn connect(cli: &Cli) -> Result<Box<dyn Conn>> {
-    let tcp = cli.tcp.clone().or_else(|| cli.shim.then(|| SHIM_ADDR.to_string()));
+    let d3d12 = matches!(cli.command, Command::Overrides { .. }) && cli.socket.is_none();
+    let tcp = cli
+        .tcp
+        .clone()
+        .or_else(|| (cli.shim && !d3d12).then(|| SHIM_ADDR.to_string()))
+        .or_else(|| d3d12.then(|| SHIM_D3D12_ADDR.to_string()));
     if let Some(addr) = tcp {
         let s = TcpStream::connect(&addr).with_context(|| format!("нет соединения с {addr} — игра с shim запущена?"))?;
         s.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -117,6 +148,19 @@ fn print(cli: &Cli, response: &Response) -> Result<()> {
             let size = if s.drawable_width > 0 { format!(" · {}×{}", s.drawable_width, s.drawable_height) } else { String::new() };
             println!("кадров {} · {:.1} FPS · {:.2} мс/кадр{size} · {}", s.frames, s.fps, s.frame_ms, s.device);
         }
+        Response::Overrides(o) => {
+            println!(
+                "подмены {} · файлов {} · пар PSO {} (не создано {}) · подстановок {}",
+                if o.enabled { "ВКЛ" } else { "выкл" },
+                o.shaders_loaded,
+                o.pairs,
+                o.failed,
+                o.swaps
+            );
+            for name in &o.applied {
+                println!("  {name}");
+            }
+        }
         Response::Error { message } => bail!("ошибка: {message}"),
     }
     Ok(())
@@ -128,6 +172,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Ping => print(&cli, &ask(&mut conn, &Request::Ping)?),
         Command::Stats => print(&cli, &ask(&mut conn, &Request::Stats)?),
+        Command::Overrides { op } => print(&cli, &ask(&mut conn, &Request::Overrides { op: op.into() })?),
         Command::Watch => loop {
             print(&cli, &ask(&mut conn, &Request::Stats)?)?;
             std::thread::sleep(Duration::from_secs(1));

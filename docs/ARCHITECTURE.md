@@ -125,6 +125,9 @@ docs/
 - Прокси с ординалами как у Windows (`D3D12CreateDevice` = 101, `.def` из `build.rs`); остальные экспорты — naked-трамплины в D3DMetal.
 - vtable объектов D3DMetal лежат в read-only памяти маковского фреймворка, `VirtualProtect` Wine их не меняет → объекту устройства подставляется **копия vtable** (128 слотов) с нашими слотами: `QueryInterface` (0), `CreateGraphicsPipelineState` (10), `CreateComputePipelineState` (11), `CreatePipelineLibrary` (44), `CreatePipelineState` (47, поток подобъектов).
 - Шейдеры пишутся в `GRACE_SHADER_DUMP` (`oracle run` ставит `.local/shaders/<игра>/`) как `<fnv64>.<стадия>.dxbc`, сводка — `_stats.txt`.
+- **Подмены на лету** (`live.rs`, `recipes.rs`): для пайплайна с подменой создаются два PSO — оригинал (его получает игра) и подменённый; таблица пар без блокировок на чтение. Командным спискам (`CreateCommandList` 12, `CreateCommandList1` 51 у ID3D12Device4) подставляется копия vtable (96 слотов; на индексе −1 — адрес исходной, поэтому вариантов vtable может быть несколько) с перехватом `QueryInterface` 0, `Reset` 10, `ClearState` 11, `SetPipelineState` 25. Номера сверены с `d3d12.h` из mingw-w64.
+- **Перезагрузка с диска:** при заданном `GRACE_SHADER_OVERRIDE` для каждого PSO (устройство и библиотека) пишется рецепт — глубокая копия описания без байткода (хеши стадий; input layout, stream output, view instancing со своими строками; CachedPSO обнулён), ~1 КБ. PSO и корневой сигнатуре добавляется ссылка: адрес не переиспользуется, пару можно поставить в любой момент. `reload` перечитывает подмены и пересоздаёт подменённые PSO на устройстве игры: исходный байткод — из дампа, новый — из подмен. Старые подменённые PSO не освобождаются (могут быть в полёте на GPU).
+- Управление: TCP `127.0.0.1:47322` (`GRACE_D3D12_PORT`), `grace-ctl overrides [status|on|off|toggle|reload]`, `cargo xtask overrides --reload`.
 
 ### Shim `dxgi.dll` (`shim/dxgi-proxy`) и замеры — фаза 1
 - Прокси dxgi (ординалы как у GPTK, `.def` из `build.rs`). Копии vtable фабрики (`QueryInterface` 0, `CreateSwapChain` 10, `CreateSwapChainForHwnd` 15) и swapchain (`QueryInterface` 0, `Present` 8, `Present1` 22). `Present` с `DXGI_PRESENT_TEST` не считается.
@@ -145,7 +148,7 @@ docs/
 - Для режима A — сборка MSL в `metallib` и Metal binary archives, чтобы не было статтеров компиляции.
 
 ### Управление (`grace-ctl` / `grace-mcp`)
-- Один протокол JSON поверх Unix-сокета (рантайм) или loopback TCP (shim).
+- Один протокол JSON поверх Unix-сокета (рантайм) или loopback TCP (shim: dxgi — 47321, статистика; d3d12 — 47322, подмены).
 - Команды: `ping`, `stats`, `camera set/get`, `feature on/off`, `capture`, `wait-for <событие>`, `events` (без опроса).
 - MCP-сервер даёт агенту те же команды напрямую.
 

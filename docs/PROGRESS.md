@@ -2,6 +2,21 @@
 
 Новые записи — сверху. Каждая запись: что сделано, как проверено, цифры, что дальше, блокеры.
 
+## ▶ Текущее состояние (сводка на 2026-11-08, читать первым)
+
+**Раскладка:** `ProjectPort/` (не git) → `elder-grace/` (движок, git, `main`), `grace-eldenring/` (игра, git, `main`), `.local/` (данные, префикс, кэши — не git). Чистая копия Elden Ring: `~/Games/EldenRing/Game` (read-only), песочница — APFS-клон в `.local/game_bean/elden_ring`.
+
+**Работает (всё проверено):**
+- Эталон на GPTK 3.0-3 одной командой: `cargo xtask oracle setup|steam [--ui]|run [--label L] [--no-shim] [--no-overrides]|status|kill`. Windows-Steam в префиксе поднят нашими compat-shim'ами для Wine 7.7 (bcrypt: псевдо-хендлы; realtime: `Query*InterruptTime*`; winsock: `getsockname` после `AcceptEx`; TCP-реестр владельцев для `GetExtendedTcpTable`; запасной `GetProcAddress`; общий IAT-патчер). Пользователь залогинен, сессия запомнена. `crash-probe` — отладчик падений вместо `winedbg`.
+- Shim `d3d12.dll` в игре: копии vtable устройства и библиотеки пайплайнов; дамп шейдеров (корпус 5988, 99,5% DXIL 6.0); **подмена шейдеров** (`GRACE_SHADER_OVERRIDE`, HLSL в `grace-eldenring/shaders/overrides/`, `cargo xtask overrides`) — текст меню золотой, подтверждено пользователем.
+- Конвейер шейдеров `cargo xtask shaders`: DXIL → metallib (Metal Shader Converter из GPTK, `tools/grace-irconv` под Rosetta), DXBC → vkd3d → SPIRV-Cross → metallib; 5988/5988 грузятся в Metal (M5 Pro). Это компилируемость, не рендер.
+- Замеры: shim `dxgi.dll` (время кадра из `Present`), `cargo xtask bench`, `cargo xtask trace` (Metal System Trace + вердикт CPU/GPU), `grace-ctl --shim watch`.
+
+**Базовая линия:** только «на глаз» (~40 FPS мир, ~35 макс. настройки) и прогон меню. Нужен прогон в мире: `oracle run --label world-base` + `trace --label world-base` + `bench world-base` → в `grace-eldenring/docs/BASELINE.md`.
+
+**Дальше по договорённости:** мелкое — прямо в `main` (коммитит агент); крупное — в feat-ветках (коммитит агент, мержит пользователь): `feat/live-overrides` (подмены через `grace-ctl` на лету), `feat/dxil-overrides` (сборка dxc, подмены DXIL). Не пушить, не мержить в main без пользователя.
+
+
 ---
 
 ## 2026-11-08 — Сессия 2: замеры (фаза 1), инструменты — в main

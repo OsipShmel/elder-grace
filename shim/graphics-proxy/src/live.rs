@@ -39,42 +39,47 @@ fn slot_of(key: usize) -> usize {
     ((key >> 4).wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 52) & (CAP - 1)
 }
 
-/// Запоминает пару «оригинал → подменённый».
+/// Ставит пару «оригинал → подменённый» (`None` — убрать подмену у оригинала).
+/// Возвращает true, если у оригинала до этого была активная подмена.
 ///
-/// Оригиналу добавляется ссылка: пока пара в таблице, его адрес не может достаться
-/// другому PSO (иначе подмена сработала бы на чужом пайплайне). Утечка ограничена
-/// числом подменённых пайплайнов — для инструмента разработки это приемлемо.
-///
-/// # Safety
-/// `orig` и `over` — живые COM-объекты ID3D12PipelineState.
-pub unsafe fn register(orig: *mut c_void, over: *mut c_void) {
-    if orig.is_null() || over.is_null() {
-        return;
+/// Оригинал должен оставаться живым, пока пара в таблице: иначе его адрес достанется
+/// другому PSO. Ссылку на него держат рецепты (`recipes.rs`).
+pub fn set_pair(orig: usize, over: Option<usize>) -> bool {
+    if orig == 0 {
+        return false;
     }
-    let Ok(_guard) = INSERT.lock() else { return };
-    if PAIRS.load(Ordering::Relaxed) >= CAP / 2 {
-        debug("таблица пар PSO заполнена, подмена не зарегистрирована");
-        return;
-    }
-    // SAFETY: слот 1 vtable любого COM-объекта — AddRef.
-    unsafe {
-        let add_ref: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(*(*(orig as *const *const usize)).add(1));
-        add_ref(orig);
-    }
-    let key = orig as usize;
-    let mut i = slot_of(key);
+    let value = over.unwrap_or(orig);
+    let Ok(_guard) = INSERT.lock() else { return false };
+    let mut i = slot_of(orig);
     loop {
         let k = KEYS[i].load(Ordering::Relaxed);
-        if k == 0 || k == key {
-            VALUES[i].store(over as usize, Ordering::Relaxed);
-            KEYS[i].store(key, Ordering::Release);
-            if k == 0 {
-                PAIRS.fetch_add(1, Ordering::Relaxed);
+        if k == orig {
+            let prev = VALUES[i].swap(value, Ordering::AcqRel);
+            return prev != orig;
+        }
+        if k == 0 {
+            if over.is_none() {
+                return false;
             }
-            return;
+            if PAIRS.load(Ordering::Relaxed) >= CAP / 2 {
+                debug("таблица пар PSO заполнена, подмена не зарегистрирована");
+                return false;
+            }
+            VALUES[i].store(value, Ordering::Relaxed);
+            KEYS[i].store(orig, Ordering::Release);
+            PAIRS.fetch_add(1, Ordering::Relaxed);
+            return false;
         }
         i = (i + 1) & (CAP - 1);
     }
+}
+
+/// Активных пар (подменённый отличается от оригинала).
+fn active_pairs() -> usize {
+    KEYS.iter().zip(&VALUES).filter(|(k, v)| {
+        let k = k.load(Ordering::Acquire);
+        k != 0 && v.load(Ordering::Relaxed) != k
+    }).count()
 }
 
 pub fn note_failed() {
@@ -95,8 +100,12 @@ fn swap(pso: *mut c_void) -> *mut c_void {
             return pso;
         }
         if k == key {
+            let v = VALUES[i].load(Ordering::Acquire);
+            if v == key {
+                return pso;
+            }
             SWAPS.fetch_add(1, Ordering::Relaxed);
-            return VALUES[i].load(Ordering::Relaxed) as *mut c_void;
+            return v as *mut c_void;
         }
         i = (i + 1) & (CAP - 1);
     }
@@ -231,6 +240,7 @@ pub fn initial_pso(pso: *mut c_void) -> *mut c_void {
 // ---- применённые подмены и канал управления ------------------------------------------------
 
 static APPLIED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+static LAST_RELOAD: Mutex<String> = Mutex::new(String::new());
 
 pub fn note_applied(name: String) {
     if let Ok(mut a) = APPLIED.lock() {
@@ -242,10 +252,12 @@ fn status() -> OverrideStatus {
     OverrideStatus {
         enabled: ENABLED.load(Ordering::Relaxed),
         shaders_loaded: crate::overrides::loaded(),
-        pairs: PAIRS.load(Ordering::Relaxed),
+        pairs: active_pairs(),
         failed: FAILED.load(Ordering::Relaxed),
         swaps: SWAPS.load(Ordering::Relaxed),
         applied: APPLIED.lock().map(|a| a.iter().cloned().collect()).unwrap_or_default(),
+        recipes: crate::recipes::count(),
+        last_reload: LAST_RELOAD.lock().map(|s| s.clone()).unwrap_or_default(),
     }
 }
 
@@ -284,8 +296,15 @@ fn serve(conn: TcpStream) {
             Ok(Some(Request::Stats)) => Response::Error { message: "статистика кадра — в shim dxgi (порт 47321)".into() },
             Ok(Some(Request::Overrides { op })) => {
                 let before = ENABLED.load(Ordering::Relaxed);
+                if op == OverrideOp::Reload {
+                    let summary = crate::reload_overrides();
+                    debug(&summary);
+                    if let Ok(mut l) = LAST_RELOAD.lock() {
+                        *l = summary;
+                    }
+                }
                 let after = match op {
-                    OverrideOp::Status => before,
+                    OverrideOp::Status | OverrideOp::Reload => before,
                     OverrideOp::On => true,
                     OverrideOp::Off => false,
                     OverrideOp::Toggle => !before,

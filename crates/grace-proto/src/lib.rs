@@ -24,6 +24,8 @@ pub enum OverrideOp {
     On,
     Off,
     Toggle,
+    /// Перечитать каталог подмен и пересоздать подменённые PSO.
+    Reload,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -67,6 +69,12 @@ pub struct OverrideStatus {
     pub swaps: u64,
     /// Применённые подмены: `<хеш>.<стадия>`.
     pub applied: Vec<String>,
+    /// Записанных рецептов PSO (для перезагрузки с диска).
+    #[serde(default)]
+    pub recipes: usize,
+    /// Итог последней перезагрузки, пусто — не было.
+    #[serde(default)]
+    pub last_reload: String,
 }
 
 pub fn write_message<W: Write, T: Serialize>(w: &mut W, msg: &T) -> io::Result<()> {
@@ -113,6 +121,8 @@ mod tests {
             failed: 0,
             swaps: 42,
             applied: vec!["cfb409a01172e9fb.ps".into()],
+            recipes: 8875,
+            last_reload: String::new(),
         });
         let mut buf = Vec::new();
         write_message(&mut buf, &status).unwrap();

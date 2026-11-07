@@ -53,6 +53,8 @@ enum Op {
     On,
     Off,
     Toggle,
+    /// Перечитать каталог подмен и пересоздать подменённые PSO
+    Reload,
 }
 
 impl From<Op> for OverrideOp {
@@ -62,6 +64,7 @@ impl From<Op> for OverrideOp {
             Op::On => OverrideOp::On,
             Op::Off => OverrideOp::Off,
             Op::Toggle => OverrideOp::Toggle,
+            Op::Reload => OverrideOp::Reload,
         }
     }
 }
@@ -150,13 +153,17 @@ fn print(cli: &Cli, response: &Response) -> Result<()> {
         }
         Response::Overrides(o) => {
             println!(
-                "подмены {} · файлов {} · пар PSO {} (не создано {}) · подстановок {}",
+                "подмены {} · файлов {} · пар PSO {} (не создано {}) · подстановок {} · рецептов {}",
                 if o.enabled { "ВКЛ" } else { "выкл" },
                 o.shaders_loaded,
                 o.pairs,
                 o.failed,
-                o.swaps
+                o.swaps,
+                o.recipes
             );
+            if !o.last_reload.is_empty() {
+                println!("{}", o.last_reload);
+            }
             for name in &o.applied {
                 println!("  {name}");
             }

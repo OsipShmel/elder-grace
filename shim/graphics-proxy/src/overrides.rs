@@ -13,7 +13,7 @@
 //! в командные списки (`live.rs`), пока подмены включены.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{debug, fnv1a, subobject_layout};
 
@@ -22,24 +22,52 @@ pub const GRAPHICS_DESC_SIZE: usize = 656;
 /// sizeof(D3D12_COMPUTE_PIPELINE_STATE_DESC) на x64.
 pub const COMPUTE_DESC_SIZE: usize = 56;
 
-fn table() -> &'static HashMap<u64, &'static [u8]> {
-    static TABLE: OnceLock<HashMap<u64, &'static [u8]>> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        let mut map = HashMap::new();
-        let Some(dir) = std::env::var_os("GRACE_SHADER_OVERRIDE") else { return map };
-        let Ok(entries) = std::fs::read_dir(&dir) else { return map };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let Some(hex) = name.split('.').next() else { continue };
-            let (Ok(hash), true) = (u64::from_str_radix(hex, 16), name.ends_with(".dxbc")) else { continue };
-            if let Ok(bytes) = std::fs::read(&path) {
-                map.insert(hash, &*Box::leak(bytes.into_boxed_slice()));
-            }
+type Table = Arc<HashMap<u64, &'static [u8]>>;
+
+static TABLE: RwLock<Option<Table>> = RwLock::new(None);
+
+/// Читает каталог `GRACE_SHADER_OVERRIDE`. Байты прежних подмен не освобождаются:
+/// на них могут ссылаться уже созданные PSO и описания в полёте.
+fn load_dir() -> HashMap<u64, &'static [u8]> {
+    let mut map = HashMap::new();
+    let Some(dir) = std::env::var_os("GRACE_SHADER_OVERRIDE") else { return map };
+    let Ok(entries) = std::fs::read_dir(&dir) else { return map };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let Some(hex) = name.split('.').next() else { continue };
+        let (Ok(hash), true) = (u64::from_str_radix(hex, 16), name.ends_with(".dxbc")) else { continue };
+        if let Ok(bytes) = std::fs::read(&path) {
+            map.insert(hash, &*Box::leak(bytes.into_boxed_slice()));
         }
-        debug(&format!("подмен шейдеров загружено: {}", map.len()));
-        map
-    })
+    }
+    debug(&format!("подмен шейдеров загружено: {}", map.len()));
+    map
+}
+
+fn table() -> Table {
+    if let Ok(t) = TABLE.read()
+        && let Some(t) = t.as_ref()
+    {
+        return t.clone();
+    }
+    let Ok(mut t) = TABLE.write() else { return Arc::default() };
+    t.get_or_insert_with(|| Arc::new(load_dir())).clone()
+}
+
+/// Перечитать каталог подмен; возвращает число загруженных.
+pub fn reload() -> usize {
+    let fresh = Arc::new(load_dir());
+    let n = fresh.len();
+    if let Ok(mut t) = TABLE.write() {
+        *t = Some(fresh);
+    }
+    n
+}
+
+/// Байткод подмены для исходного шейдера с хешем `hash`.
+pub fn get(hash: u64) -> Option<&'static [u8]> {
+    table().get(&hash).copied()
 }
 
 /// Сколько файлов подмен загружено.

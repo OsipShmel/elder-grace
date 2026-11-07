@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 mod live;
 mod overrides;
+mod recipes;
 
 /// Версия протокола shim ↔ рантайм (совпадает с `grace_proto::PROTOCOL_VERSION`).
 pub const SHIM_PROTOCOL_VERSION: u32 = 1;
@@ -197,7 +198,7 @@ unsafe fn make_pair(out: *mut *mut c_void, create: impl FnOnce(*mut *mut c_void)
     let mut over = std::ptr::null_mut();
     let hr = create(&mut over);
     if hr >= 0 && !over.is_null() {
-        unsafe { live::register(orig, over) };
+        live::set_pair(orig as usize, Some(over as usize));
     } else {
         live::note_failed();
         debug(&format!("подменённый PSO не создан ({hr:#x}), игра работает с оригиналом"));
@@ -310,7 +311,12 @@ unsafe extern "system" fn hooked_lib_graphics(this: *mut c_void, name: *const u1
     }
     // SAFETY: оригинал записан при подстановке vtable.
     let orig: LibLoad = unsafe { std::mem::transmute(ORIG_LIB_GRAPHICS.load(Ordering::Acquire)) };
-    unsafe { orig(this, name, desc, riid, out) }
+    let hr = unsafe { orig(this, name, desc, riid, out) };
+    if hr >= 0 && !out.is_null() {
+        // SAFETY: при успехе *out — PSO из кэша, desc — его описание.
+        unsafe { recipes::record_graphics(*out, desc) };
+    }
+    hr
 }
 
 unsafe extern "system" fn hooked_lib_compute(this: *mut c_void, name: *const u16, desc: *const u8, riid: *const [u8; 16], out: *mut *mut c_void) -> i32 {
@@ -323,7 +329,12 @@ unsafe extern "system" fn hooked_lib_compute(this: *mut c_void, name: *const u16
     }
     // SAFETY: оригинал записан при подстановке vtable.
     let orig: LibLoad = unsafe { std::mem::transmute(ORIG_LIB_COMPUTE.load(Ordering::Acquire)) };
-    unsafe { orig(this, name, desc, riid, out) }
+    let hr = unsafe { orig(this, name, desc, riid, out) };
+    if hr >= 0 && !out.is_null() {
+        // SAFETY: при успехе *out — PSO из кэша, desc — его описание.
+        unsafe { recipes::record_compute(*out, desc) };
+    }
+    hr
 }
 
 unsafe extern "system" fn hooked_lib_stream(this: *mut c_void, name: *const u16, desc: *const u8, riid: *const [u8; 16], out: *mut *mut c_void) -> i32 {
@@ -341,7 +352,13 @@ unsafe extern "system" fn hooked_lib_stream(this: *mut c_void, name: *const u16,
     }
     // SAFETY: оригинал записан при подстановке vtable.
     let orig: LibLoad = unsafe { std::mem::transmute(ORIG_LIB_STREAM.load(Ordering::Acquire)) };
-    unsafe { orig(this, name, desc, riid, out) }
+    let hr = unsafe { orig(this, name, desc, riid, out) };
+    if hr >= 0 && !out.is_null() && !desc.is_null() {
+        // SAFETY: D3D12_PIPELINE_STATE_STREAM_DESC { SIZE_T, void* }; *out — PSO из кэша.
+        let (size, stream) = unsafe { (*(desc as *const usize), *(desc.add(8) as *const *const u8)) };
+        unsafe { recipes::record_stream(*out, stream, size) };
+    }
+    hr
 }
 
 
@@ -361,6 +378,56 @@ fn library_miss(out: *mut *mut c_void) -> i32 {
 }
 
 static HOOKED: AtomicBool = AtomicBool::new(false);
+/// Устройство игры: на нём пересоздаём подменённые PSO при перезагрузке.
+static DEVICE: AtomicUsize = AtomicUsize::new(0);
+/// IID_ID3D12PipelineState {765a30f3-f624-4c6f-a828-ace948622445}.
+const IID_PSO: [u8; 16] = live::guid(0x765a30f3, 0xf624, 0x4c6f, [0xa8, 0x28, 0xac, 0xe9, 0x48, 0x62, 0x24, 0x45]);
+
+/// `grace-ctl overrides reload`: перечитать подмены и пересоздать подменённые PSO.
+pub(crate) fn reload_overrides() -> String {
+    let dev = DEVICE.load(Ordering::Acquire) as *mut c_void;
+    if dev.is_null() {
+        return "перезагрузка: устройства ещё нет".into();
+    }
+    if !recipes::active() {
+        return "перезагрузка: каталог подмен не задан (GRACE_SHADER_OVERRIDE)".into();
+    }
+    let started = std::time::Instant::now();
+    let loaded = overrides::reload();
+    let original = |stage: &str, hash: u64| std::fs::read(dump_dir()?.join(format!("{hash:016x}.{stage}.dxbc"))).ok();
+    let create = |kind: recipes::Kind, bytes: &[u8], out: *mut *mut c_void| -> i32 {
+        // SAFETY: оригиналы методов устройства записаны в hook_device; описание собрано из рецепта.
+        unsafe {
+            match kind {
+                recipes::Kind::Graphics => {
+                    let f: CreatePso = std::mem::transmute(ORIG_GRAPHICS.load(Ordering::Acquire));
+                    f(dev, bytes.as_ptr(), &IID_PSO, out)
+                }
+                recipes::Kind::Compute => {
+                    let f: CreatePso = std::mem::transmute(ORIG_COMPUTE.load(Ordering::Acquire));
+                    f(dev, bytes.as_ptr(), &IID_PSO, out)
+                }
+                recipes::Kind::Stream => {
+                    let p = ORIG_STREAM.load(Ordering::Acquire);
+                    if p == 0 {
+                        return E_INVALIDARG;
+                    }
+                    let f: CreatePso = std::mem::transmute(p);
+                    let desc: [usize; 2] = [bytes.len(), bytes.as_ptr() as usize];
+                    f(dev, desc.as_ptr().cast(), &IID_PSO, out)
+                }
+            }
+        }
+    };
+    let r = recipes::rebuild(overrides::get, original, create, live::set_pair);
+    format!(
+        "перезагрузка: подмен {loaded}, PSO пересоздано {}, ошибок {}, снято {} за {} мс",
+        r.created,
+        r.failed,
+        r.cleared,
+        started.elapsed().as_millis()
+    )
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn D3D12CreateDevice(adapter: *mut c_void, level: u32, riid: *const [u8; 16], out: *mut *mut c_void) -> i32 {
@@ -448,6 +515,7 @@ unsafe fn hook_device(dev: *mut c_void) {
         set(SLOT_STREAM, hooked_stream as *const () as usize, &ORIG_STREAM);
     }
     let clone = Box::leak(clone);
+    DEVICE.store(dev as usize, Ordering::Release);
     ORIG_VTBL.store(vtbl as usize, Ordering::Release);
     CLONED_VTBL.store(clone.as_ptr() as usize, Ordering::Release);
     unsafe { adopt(dev) };
@@ -471,6 +539,10 @@ unsafe extern "system" fn hooked_graphics(this: *mut c_void, desc: *const u8, ri
     // SAFETY: оригинал записан при установке хука.
     let orig: CreatePso = unsafe { std::mem::transmute(ORIG_GRAPHICS.load(Ordering::Acquire)) };
     let hr = unsafe { orig(this, desc, riid, out) };
+    if hr >= 0 && !out.is_null() {
+        // SAFETY: при успехе *out — PSO, desc — его описание.
+        unsafe { recipes::record_graphics(*out, desc) };
+    }
     if hr >= 0
         && !desc.is_null()
         && let Some(copy) = unsafe { overrides::graphics_copy(desc) }
@@ -489,6 +561,10 @@ unsafe extern "system" fn hooked_compute(this: *mut c_void, desc: *const u8, rii
     // SAFETY: оригинал записан при установке хука.
     let orig: CreatePso = unsafe { std::mem::transmute(ORIG_COMPUTE.load(Ordering::Acquire)) };
     let hr = unsafe { orig(this, desc, riid, out) };
+    if hr >= 0 && !out.is_null() {
+        // SAFETY: при успехе *out — PSO, desc — его описание.
+        unsafe { recipes::record_compute(*out, desc) };
+    }
     if hr >= 0
         && !desc.is_null()
         && let Some(copy) = unsafe { overrides::compute_copy(desc) }
@@ -512,6 +588,10 @@ unsafe extern "system" fn hooked_stream(this: *mut c_void, desc: *const u8, riid
     }
     note_pipeline(Kind::Stream);
     let hr = unsafe { orig(this, desc, riid, out) };
+    if hr >= 0 && !out.is_null() && !stream.is_null() {
+        // SAFETY: при успехе *out — PSO, stream — его поток подобъектов.
+        unsafe { recipes::record_stream(*out, stream, size) };
+    }
     if hr >= 0
         && !stream.is_null()
         && let Some(copy) = unsafe { overrides::stream_copy(stream, size) }
@@ -588,7 +668,7 @@ static SHADERS_SEEN: AtomicU64 = AtomicU64::new(0);
 static SHADERS_NEW: AtomicU64 = AtomicU64::new(0);
 static BYTES_NEW: AtomicU64 = AtomicU64::new(0);
 
-fn dump_dir() -> Option<&'static std::path::Path> {
+pub(crate) fn dump_dir() -> Option<&'static std::path::Path> {
     static DIR: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
         let dir = std::path::PathBuf::from(std::env::var_os("GRACE_SHADER_DUMP")?);

@@ -2,7 +2,8 @@
 //! `cargo xtask shim [--release]` — собрать shim под Windows x86_64.
 //! `cargo xtask oracle …` — среда эталона на GPTK (см. oracle.rs).
 //! `cargo xtask shaders [игра]` — корпус шейдеров: сводка → DXIL→metallib → проверка в Metal.
-//! `cargo xtask overrides [игра]` — собрать подмены шейдеров из `../grace-<игра>/shaders/overrides/*.hlsl`.
+//! `cargo xtask overrides [игра] [--reload]` — собрать подмены шейдеров из `../grace-<игра>/shaders/overrides/*.hlsl`;
+//!   `--reload` — сразу перезагрузить их в запущенной игре (shim d3d12, TCP 47322).
 //! `cargo xtask bench <журнал|метка> [<журнал2|метка2>] [--skip сек] [--game игра]` — отчёт по времени кадра.
 //! `cargo xtask trace [--seconds N] [--label L] [--game игра]` — Metal System Trace запущенной игры + вердикт CPU/GPU.
 
@@ -21,7 +22,11 @@ fn main() -> Result<()> {
         Some("shim") => shim(flag("--release")),
         Some("oracle") => oracle::main(&args[1..]),
         Some("shaders") => shaders(args.get(1).map_or("eldenring", String::as_str)),
-        Some("overrides") => overrides(args.get(1).map_or("eldenring", String::as_str)),
+        Some("overrides") => {
+            let game = args.get(1).filter(|a| !a.starts_with("--")).map_or("eldenring", String::as_str);
+            overrides(game)?;
+            if flag("--reload") { reload_overrides() } else { Ok(()) }
+        }
         Some("bench") => bench(&args[1..]),
         Some("trace") => trace(&args[1..]),
         _ => bail!("использование: cargo xtask bundle [--debug] | shim [--release] | oracle …"),
@@ -213,6 +218,25 @@ fn overrides(game: &str) -> Result<()> {
         bail!("не все подмены собрались");
     }
     Ok(())
+}
+
+/// Перезагрузка подмен в запущенной игре через канал управления shim d3d12.
+fn reload_overrides() -> Result<()> {
+    use std::io::BufReader;
+    let addr = "127.0.0.1:47322";
+    let stream = std::net::TcpStream::connect(addr).with_context(|| format!("нет соединения с {addr} — игра с shim запущена?"))?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
+    let mut w = stream.try_clone()?;
+    grace_proto::write_message(&mut w, &grace_proto::Request::Overrides { op: grace_proto::OverrideOp::Reload })?;
+    match grace_proto::read_message::<_, grace_proto::Response>(&mut BufReader::new(stream))? {
+        Some(grace_proto::Response::Overrides(o)) => {
+            println!("{}", o.last_reload);
+            println!("подмены {} · пар PSO {}", if o.enabled { "ВКЛ" } else { "выкл" }, o.pairs);
+            Ok(())
+        }
+        Some(grace_proto::Response::Error { message }) => bail!("shim: {message}"),
+        other => bail!("неожиданный ответ shim: {other:?}"),
+    }
 }
 
 /// Отчёт по журналам кадров. Аргумент — путь к CSV или метка прогона

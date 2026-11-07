@@ -126,6 +126,13 @@ docs/
 - vtable объектов D3DMetal лежат в read-only памяти маковского фреймворка, `VirtualProtect` Wine их не меняет → объекту устройства подставляется **копия vtable** (128 слотов) с нашими слотами: `QueryInterface` (0), `CreateGraphicsPipelineState` (10), `CreateComputePipelineState` (11), `CreatePipelineLibrary` (44), `CreatePipelineState` (47, поток подобъектов).
 - Шейдеры пишутся в `GRACE_SHADER_DUMP` (`oracle run` ставит `.local/shaders/<игра>/`) как `<fnv64>.<стадия>.dxbc`, сводка — `_stats.txt`.
 
+### Shim `dxgi.dll` (`shim/dxgi-proxy`) и замеры — фаза 1
+- Прокси dxgi (ординалы как у GPTK, `.def` из `build.rs`). Копии vtable фабрики (`QueryInterface` 0, `CreateSwapChain` 10, `CreateSwapChainForHwnd` 15) и swapchain (`QueryInterface` 0, `Present` 8, `Present1` 22). `Present` с `DXGI_PRESENT_TEST` не считается.
+- Журнал `GRACE_FRAMETIME_LOG` → CSV `frame,t_ms,dt_ms`; `oracle run --label L` пишет в `.local/frametimes/<игра>/L.csv`. `--no-shim` убирает только d3d12-прокси: время кадра меряется одинаково в обоих режимах.
+- Живая статистика: TCP `127.0.0.1:47321` (`GRACE_SHIM_PORT`), протокол `grace-proto`; `grace-ctl --shim stats|watch`.
+- `cargo xtask bench <метка> [<метка2>]` (`crates/grace-bench`): средний FPS, p50/p95/p99, 1% и 0.1% low, статтеры (> max(2×медиана, 25 мс)), гистограмма, сравнение B против A.
+- `cargo xtask trace [--seconds N] [--label L]`: Metal System Trace (`xctrace record --attach`) запущенной игры → `.local/traces/<игра>/L.trace` → разбор: занятость GPU (объединение интервалов `metal-gpu-intervals` верхнего уровня), загрузка CPU по потокам (`ThreadCPUUsage`), вердикт GPU-bound / CPU-bound / ожидание.
+
 ### Шейдерный конвейер (`grace-shader`, `tools/grace-irconv`) — `cargo xtask shaders [игра]`
 1. `grace-shader inventory` — разбор контейнеров DXBC (форматы DXBC SM4/5 и DXIL SM6), сводка по стадиям/моделям.
 2. `grace-irconv` (x86_64, под Rosetta) — DXIL → `.metallib` через Apple Metal Shader Converter (`libmetalirconverter.dylib` из D3DMetal в GPTK, только x86_64; используется локально). Вывод: `.local/shaders/<игра>-metal/`.

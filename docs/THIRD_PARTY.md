@@ -10,6 +10,7 @@
 | png | 0.18.1 | MIT OR Apache-2.0 | Запись кадров `--capture` | `grace-app` |
 | serde, serde_json, toml | 1.x | MIT OR Apache-2.0 | Протокол, конфиг | `grace-core`, `grace-proto` |
 | clap, anyhow, thiserror | 4.x / 1.x / 2.x | MIT OR Apache-2.0 | CLI, ошибки | везде |
+| quick-xml | 0.41 | MIT (cargo info, 2026-11-08) | Разбор XML-выгрузки xctrace | `grace-bench` |
 
 Транзитивные зависимости: смотреть `cargo metadata`; перед первым распространением сборки прогнать проверку лицензий (`cargo deny` или аналог).
 

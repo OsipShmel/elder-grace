@@ -12,7 +12,7 @@
 - Конвейер шейдеров `cargo xtask shaders`: DXIL → metallib (Metal Shader Converter из GPTK, `tools/grace-irconv` под Rosetta), DXBC → vkd3d → SPIRV-Cross → metallib; 5988/5988 грузятся в Metal (M5 Pro). Это компилируемость, не рендер.
 - Замеры: shim `dxgi.dll` (время кадра из `Present`), `cargo xtask bench`, `cargo xtask trace` (Metal System Trace + вердикт CPU/GPU), `grace-ctl --shim watch`.
 
-**Базовая линия:** только «на глаз» (~40 FPS мир, ~35 макс. настройки) и прогон меню. Нужен прогон в мире: `oracle run --label world-base` + `trace --label world-base` + `bench world-base` → в `grace-eldenring/docs/BASELINE.md`.
+**Базовая линия (world-base, макс. настройки):** открытый мир 25–46 FPS, подземелье ~60 (лимит игры). В мире GPU занят 63–71%, главный поток 66–70% ядра, ~60 command buffer на кадр → ни GPU, ни CPU не насыщены, кадр теряется на взаимном ожидании. Подробно — `grace-eldenring/docs/BASELINE.md`. Следующий диагностический шаг — какие именно ожидания (thread states/Time Profiler).
 
 **Дальше по договорённости:** мелкое — прямо в `main` (коммитит агент); крупное — в feat-ветках (коммитит агент, мержит пользователь): `feat/live-overrides` (подмены через `grace-ctl` на лету), `feat/dxil-overrides` (сборка dxc, подмены DXIL). Не пушить, не мержить в main без пользователя.
 

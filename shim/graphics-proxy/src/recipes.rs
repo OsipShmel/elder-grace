@@ -42,6 +42,13 @@ pub fn active() -> bool {
     *ACTIVE.get_or_init(|| std::env::var_os("GRACE_SHADER_OVERRIDE").is_some())
 }
 
+/// Шейдеры PSO по рецепту: (стадия, хеш).
+pub fn shaders_of(pso: usize) -> Option<Vec<(&'static str, u64)>> {
+    let map = RECIPES.lock().ok()?;
+    let r = map.as_ref()?.get(&pso)?;
+    Some(r.shaders.iter().map(|&(_, stage, hash)| (stage, hash)).collect())
+}
+
 pub fn count() -> usize {
     RECIPES.lock().ok().and_then(|r| r.as_ref().map(HashMap::len)).unwrap_or(0)
 }

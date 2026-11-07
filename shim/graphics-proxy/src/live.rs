@@ -86,9 +86,66 @@ pub fn note_failed() {
     FAILED.fetch_add(1, Ordering::Relaxed);
 }
 
+// ---- запись привязок: какие шейдеры рисуют сейчас ---------------------------------------
+
+static RECORDING: AtomicBool = AtomicBool::new(false);
+static BOUND: Mutex<Option<std::collections::HashMap<usize, u64>>> = Mutex::new(None);
+
+#[cold]
+fn record_bind(pso: usize) {
+    if let Ok(mut b) = BOUND.lock() {
+        *b.get_or_insert_with(Default::default).entry(pso).or_default() += 1;
+    }
+}
+
+/// DXIL-контейнер: среди чанков есть `DXIL`.
+fn is_dxil(bytes: &[u8]) -> bool {
+    let u32_at = |o: usize| bytes.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let Some(n) = u32_at(28) else { return false };
+    (0..n as usize).filter_map(|i| u32_at(32 + i * 4)).any(|off| bytes.get(off as usize..off as usize + 4) == Some(b"DXIL"))
+}
+
+/// Записывает привязки PSO в течение `ms` и сводит их по шейдерам.
+fn bound_report(ms: u32) -> grace_proto::BoundReport {
+    if let Ok(mut b) = BOUND.lock() {
+        *b = Some(Default::default());
+    }
+    RECORDING.store(true, Ordering::Release);
+    std::thread::sleep(std::time::Duration::from_millis(u64::from(ms.clamp(16, 30_000))));
+    RECORDING.store(false, Ordering::Release);
+    let binds = BOUND.lock().ok().and_then(|mut b| b.take()).unwrap_or_default();
+    let mut per: std::collections::HashMap<(u64, &'static str), (u64, u32)> = Default::default();
+    let mut unknown = 0;
+    for (&pso, &n) in &binds {
+        let Some(shaders) = crate::recipes::shaders_of(pso) else {
+            unknown += 1;
+            continue;
+        };
+        for (stage, hash) in shaders {
+            let e = per.entry((hash, stage)).or_default();
+            e.0 += n;
+            e.1 += 1;
+        }
+    }
+    let dump = crate::dump_dir();
+    let mut shaders: Vec<grace_proto::BoundShader> = per
+        .into_iter()
+        .map(|((hash, stage), (binds, pipelines))| {
+            let name = format!("{hash:016x}.{stage}");
+            let dxil = dump.and_then(|d| std::fs::read(d.join(format!("{name}.dxbc"))).ok()).is_some_and(|b| is_dxil(&b));
+            grace_proto::BoundShader { name, binds, pipelines, dxil }
+        })
+        .collect();
+    shaders.sort_by(|a, b| b.binds.cmp(&a.binds).then_with(|| a.name.cmp(&b.name)));
+    grace_proto::BoundReport { ms, pipelines: binds.len(), unknown, shaders }
+}
+
 /// PSO, который надо отдать D3DMetal вместо `pso`.
 #[inline]
 fn swap(pso: *mut c_void) -> *mut c_void {
+    if RECORDING.load(Ordering::Relaxed) && !pso.is_null() {
+        record_bind(pso as usize);
+    }
     if pso.is_null() || !ENABLED.load(Ordering::Relaxed) || PAIRS.load(Ordering::Relaxed) == 0 {
         return pso;
     }
@@ -294,6 +351,13 @@ fn serve(conn: TcpStream) {
                 version: env!("CARGO_PKG_VERSION").into(),
             },
             Ok(Some(Request::Stats)) => Response::Error { message: "статистика кадра — в shim dxgi (порт 47321)".into() },
+            Ok(Some(Request::Bound { ms })) => {
+                if crate::recipes::active() {
+                    Response::Bound(bound_report(ms))
+                } else {
+                    Response::Error { message: "нет рецептов PSO: запусти игру с каталогом подмен (GRACE_SHADER_OVERRIDE)".into() }
+                }
+            }
             Ok(Some(Request::Overrides { op })) => {
                 let before = ENABLED.load(Ordering::Relaxed);
                 if op == OverrideOp::Reload {

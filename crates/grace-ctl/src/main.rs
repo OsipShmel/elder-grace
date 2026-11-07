@@ -40,6 +40,18 @@ enum Command {
     Stats,
     /// Печатать статистику раз в секунду (Ctrl+C — выход)
     Watch,
+    /// Какие шейдеры рисуют сейчас (shim d3d12): запись привязок PSO за окно
+    Bound {
+        /// Окно записи, мс
+        #[arg(long, default_value_t = 1000)]
+        ms: u32,
+        /// Сколько строк показать
+        #[arg(long, default_value_t = 40)]
+        top: usize,
+        /// Только пиксельные шейдеры
+        #[arg(long)]
+        ps: bool,
+    },
     /// Подмены шейдеров в игре (shim d3d12, по умолчанию 127.0.0.1:47322)
     Overrides {
         #[arg(value_enum, default_value_t = Op::Status)]
@@ -118,7 +130,7 @@ impl Conn for Tcp {
 }
 
 fn connect(cli: &Cli) -> Result<Box<dyn Conn>> {
-    let d3d12 = matches!(cli.command, Command::Overrides { .. }) && cli.socket.is_none();
+    let d3d12 = matches!(cli.command, Command::Overrides { .. } | Command::Bound { .. }) && cli.socket.is_none();
     let tcp = cli
         .tcp
         .clone()
@@ -126,7 +138,7 @@ fn connect(cli: &Cli) -> Result<Box<dyn Conn>> {
         .or_else(|| d3d12.then(|| SHIM_D3D12_ADDR.to_string()));
     if let Some(addr) = tcp {
         let s = TcpStream::connect(&addr).with_context(|| format!("нет соединения с {addr} — игра с shim запущена?"))?;
-        s.set_read_timeout(Some(Duration::from_secs(5)))?;
+        s.set_read_timeout(Some(Duration::from_secs(60)))?;
         return Ok(Box::new(Tcp(BufReader::new(s))));
     }
     let socket = cli.socket.clone().unwrap_or_else(grace_core::paths::control_socket);
@@ -138,6 +150,20 @@ fn connect(cli: &Cli) -> Result<Box<dyn Conn>> {
 fn ask(conn: &mut Box<dyn Conn>, req: &Request) -> Result<Response> {
     conn.send(req)?;
     read_message(conn).map_err(anyhow::Error::from)?.context("собеседник закрыл соединение без ответа")
+}
+
+fn print_bound(cli: &Cli, response: &Response, top: usize, ps_only: bool) -> Result<()> {
+    let Response::Bound(r) = response else { return print(cli, response) };
+    if cli.json {
+        println!("{}", serde_json::to_string(response)?);
+        return Ok(());
+    }
+    println!("за {} мс привязано PSO: {} (без рецепта: {}), шейдеров: {}", r.ms, r.pipelines, r.unknown, r.shaders.len());
+    println!("{:>8} {:>5}  {:<5} шейдер", "привязок", "PSO", "тип");
+    for s in r.shaders.iter().filter(|s| !ps_only || s.name.ends_with(".ps")).take(top) {
+        println!("{:>8} {:>5}  {:<5} {}", s.binds, s.pipelines, if s.dxil { "DXIL" } else { "DXBC" }, s.name);
+    }
+    Ok(())
 }
 
 fn print(cli: &Cli, response: &Response) -> Result<()> {
@@ -168,6 +194,7 @@ fn print(cli: &Cli, response: &Response) -> Result<()> {
                 println!("  {name}");
             }
         }
+        Response::Bound(r) => println!("за {} мс шейдеров: {}", r.ms, r.shaders.len()),
         Response::Error { message } => bail!("ошибка: {message}"),
     }
     Ok(())
@@ -179,6 +206,10 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Ping => print(&cli, &ask(&mut conn, &Request::Ping)?),
         Command::Stats => print(&cli, &ask(&mut conn, &Request::Stats)?),
+        Command::Bound { ms, top, ps } => {
+            let r = ask(&mut conn, &Request::Bound { ms })?;
+            print_bound(&cli, &r, top, ps)
+        }
         Command::Overrides { op } => print(&cli, &ask(&mut conn, &Request::Overrides { op: op.into() })?),
         Command::Watch => loop {
             print(&cli, &ask(&mut conn, &Request::Stats)?)?;

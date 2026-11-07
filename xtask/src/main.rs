@@ -2,12 +2,15 @@
 //! `cargo xtask shim [--release]` — собрать shim под Windows x86_64.
 //! `cargo xtask oracle …` — среда эталона на GPTK (см. oracle.rs).
 //! `cargo xtask shaders [игра]` — корпус шейдеров: сводка → DXIL→metallib → проверка в Metal.
-//! `cargo xtask overrides [игра] [--reload]` — собрать подмены шейдеров из `../grace-<игра>/shaders/overrides/*.hlsl`;
+//! `cargo xtask overrides [игра] [--reload]` — собрать подмены шейдеров из `../grace-<игра>/shaders/overrides/`
+//!   (`.hlsl` — замена, `.irpatch` — правка оригинального DXIL; см. overrides.rs);
 //!   `--reload` — сразу перезагрузить их в запущенной игре (shim d3d12, TCP 47322).
+//! `cargo xtask shader <хеш>.<стадия> [--ir]` — имя, сигнатуры, ресурсы шейдера из дампа; `--ir` — дизассемблер в `.local`.
 //! `cargo xtask bench <журнал|метка> [<журнал2|метка2>] [--skip сек] [--game игра]` — отчёт по времени кадра.
 //! `cargo xtask trace [--seconds N] [--label L] [--game игра]` — Metal System Trace запущенной игры + вердикт CPU/GPU.
 
 mod oracle;
+mod overrides;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -24,8 +27,13 @@ fn main() -> Result<()> {
         Some("shaders") => shaders(args.get(1).map_or("eldenring", String::as_str)),
         Some("overrides") => {
             let game = args.get(1).filter(|a| !a.starts_with("--")).map_or("eldenring", String::as_str);
-            overrides(game)?;
+            overrides::build(&project_dir()?, game)?;
             if flag("--reload") { reload_overrides() } else { Ok(()) }
+        }
+        Some("shader") => {
+            let id = args.get(1).filter(|a| !a.starts_with("--")).context("использование: cargo xtask shader <хеш>.<стадия> [--ir] [--game игра]")?;
+            let game = args.iter().position(|a| a == "--game").and_then(|i| args.get(i + 1)).map_or("eldenring", String::as_str);
+            overrides::show(&project_dir()?, game, id, flag("--ir"))
         }
         Some("bench") => bench(&args[1..]),
         Some("trace") => trace(&args[1..]),
@@ -35,6 +43,11 @@ fn main() -> Result<()> {
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask лежит в корне workspace").to_owned()
+}
+
+/// Общая папка проекта (`ProjectPort/`): рядом лежат репозитории игр и `.local/`.
+fn project_dir() -> Result<PathBuf> {
+    Ok(root().parent().context("корень ProjectPort")?.to_owned())
 }
 
 fn cargo(args: &[&str]) -> Result<()> {
@@ -179,45 +192,6 @@ fn shaders(game: &str) -> Result<()> {
 
     println!("== проверка в Metal (нативно)");
     cargo(&["run", "-q", "--release", "-p", "grace-shader", "--", "metallib", &metal_s])
-}
-
-/// Подмены шейдеров: `../grace-<игра>/shaders/overrides/<хеш>.<стадия>.hlsl` →
-/// `.local/shaders/<игра>-override/<хеш>.<стадия>.dxbc` (vkd3d, профиль `<стадия>_5_0`).
-/// Имя файла = хеш исходного шейдера из дампа: по нему shim находит, что подменять.
-fn overrides(game: &str) -> Result<()> {
-    let project = root().parent().context("корень ProjectPort")?.to_owned();
-    let src = project.join(format!("grace-{game}/shaders/overrides"));
-    let out = project.join(format!(".local/shaders/{game}-override"));
-    let vkd3d = project.join(".local/tools/bin/vkd3d-compiler");
-    if !vkd3d.exists() {
-        bail!("нет {} — см. сборку vkd3d в docs/ARCHITECTURE.md", vkd3d.display());
-    }
-    std::fs::create_dir_all(&out)?;
-    let (mut ok, mut failed) = (0, 0);
-    let mut files: Vec<_> = std::fs::read_dir(&src).with_context(|| format!("чтение {}", src.display()))?.filter_map(|e| e.ok().map(|e| e.path())).collect();
-    files.sort();
-    for path in files.iter().filter(|p| p.extension().and_then(|e| e.to_str()) == Some("hlsl")) {
-        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let Some(stage) = stem.split('.').nth(1) else { continue };
-        let target = out.join(format!("{stem}.dxbc"));
-        let res = Command::new(&vkd3d)
-            .args(["-x", "hlsl", "-p", &format!("{stage}_5_0"), "-b", "dxbc-tpf", "-e", "main", "-o"])
-            .arg(&target)
-            .arg(path)
-            .output()?;
-        if res.status.success() {
-            println!("  {stem}: собран");
-            ok += 1;
-        } else {
-            println!("  {stem}: ОШИБКА {}", String::from_utf8_lossy(&res.stderr).trim());
-            failed += 1;
-        }
-    }
-    println!("подмен собрано {ok}, ошибок {failed} → {}", out.display());
-    if failed > 0 {
-        bail!("не все подмены собрались");
-    }
-    Ok(())
 }
 
 /// Перезагрузка подмен в запущенной игре через канал управления shim d3d12.

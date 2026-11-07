@@ -15,6 +15,8 @@ pub enum Request {
     Stats,
     /// Подмены шейдеров в shim d3d12 (TCP 47322 под эталоном).
     Overrides { op: OverrideOp },
+    /// Какие шейдеры рисуют сейчас: запись привязок PSO в течение `ms` миллисекунд.
+    Bound { ms: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +40,7 @@ pub enum Response {
     },
     Stats(Stats),
     Overrides(OverrideStatus),
+    Bound(BoundReport),
     Error {
         message: String,
     },
@@ -75,6 +78,30 @@ pub struct OverrideStatus {
     /// Итог последней перезагрузки, пусто — не было.
     #[serde(default)]
     pub last_reload: String,
+}
+
+/// Шейдеры, участвовавшие в кадрах за окно записи.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BoundReport {
+    pub ms: u32,
+    /// Разных PSO привязано за окно.
+    pub pipelines: usize,
+    /// PSO без рецепта (шейдеры неизвестны).
+    pub unknown: usize,
+    /// По убыванию числа привязок.
+    pub shaders: Vec<BoundShader>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BoundShader {
+    /// `<хеш>.<стадия>` — как в дампе и в каталоге подмен.
+    pub name: String,
+    /// Привязок PSO с этим шейдером за окно.
+    pub binds: u64,
+    /// Разных PSO с этим шейдером.
+    pub pipelines: u32,
+    /// DXIL (SM6) — иначе DXBC (SM4/5).
+    pub dxil: bool,
 }
 
 pub fn write_message<W: Write, T: Serialize>(w: &mut W, msg: &T) -> io::Result<()> {

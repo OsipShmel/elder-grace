@@ -1,5 +1,7 @@
 //! `grace-shader inventory <каталог>` — сводка по корпусу шейдеров.
 //! `grace-shader info <файл.dxbc>` — разбор одного шейдера.
+//! `grace-shader names <каталог> [подстрока] [--full]` — отладочные имена шейдеров (ILDN):
+//!   поиск по смыслу, например `names .local/shaders/eldenring sky`.
 //! `grace-shader metallib <каталог>` — загрузить каждый `.metallib` в Metal (нативно) и
 //! создать его функции: проверка, что шейдеры реально годятся для Apple GPU.
 
@@ -9,7 +11,7 @@ mod metal_check;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use grace_shader::{Bytecode, inspect, inventory, signatures};
+use grace_shader::{Bytecode, debug_name, inspect, inventory, short_name, signatures};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -54,9 +56,39 @@ fn main() -> Result<()> {
                 }
             }
         }
+        (Some("names"), Some(dir)) => names(dir, args.get(2).filter(|a| !a.starts_with("--")), args.iter().any(|a| a == "--full"))?,
         #[cfg(target_os = "macos")]
         (Some("metallib"), Some(dir)) => metal_check::run(&PathBuf::from(dir))?,
-        _ => bail!("использование: grace-shader inventory <каталог> | info <файл.dxbc> | metallib <каталог>"),
+        _ => bail!("использование: grace-shader inventory <каталог> | info <файл.dxbc> | names <каталог> [подстрока] [--full] | metallib <каталог>"),
     }
+    Ok(())
+}
+
+/// Печатает `<хеш>.<стадия>  <краткое имя>` (или полный путь) для шейдеров каталога,
+/// отфильтрованных по подстроке имени (без учёта регистра).
+fn names(dir: &str, pattern: Option<&String>, full: bool) -> Result<()> {
+    let pattern = pattern.map(|p| p.to_lowercase());
+    let mut rows = Vec::new();
+    let (mut total, mut named) = (0usize, 0usize);
+    for entry in std::fs::read_dir(dir).with_context(|| format!("чтение {dir}"))?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("dxbc") {
+            continue;
+        }
+        total += 1;
+        let Ok(data) = std::fs::read(&path) else { continue };
+        let Some(debug) = debug_name(&data) else { continue };
+        named += 1;
+        if pattern.as_ref().is_some_and(|p| !debug.to_lowercase().contains(p.as_str())) {
+            continue;
+        }
+        let id = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        rows.push((id, if full { debug.clone() } else { short_name(&debug).to_owned() }));
+    }
+    rows.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    for (id, name) in &rows {
+        println!("{id:<22} {name}");
+    }
+    eprintln!("шейдеров {total}, с именем {named}, показано {}", rows.len());
     Ok(())
 }

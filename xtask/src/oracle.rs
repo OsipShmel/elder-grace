@@ -7,6 +7,8 @@
 //!   прокси d3d12 дампит шейдеры в `.local/shaders/<игра>/`, прокси dxgi пишет время кадра
 //!   в `.local/frametimes/<игра>/<метка>.csv`).
 //! - `kill` — остановить все процессы префикса.
+//! - `shot <out.png>` — снимок окна игры (по заголовку из `GRACE_WINDOW`, по умолчанию «ELDEN RING»),
+//!   даже если оно не на переднем плане.
 //! - esync (`WINEESYNC=1`) включён по умолчанию для всех команд: без него каждое событие/мьютекс
 //!   Windows — запрос к wineserver (трейс 2026-11-08: 22% времени главного потока игры).
 //!   `--no-esync` — выключить (для A/B). Режим общий на префикс: wineserver, Steam и игра
@@ -78,6 +80,10 @@ pub fn main(args: &[String]) -> Result<()> {
             Ok(())
         }
         "status" => status(&ctx(&game_key)?),
+        "shot" => {
+            let out = args.get(1).context("использование: cargo xtask oracle shot <out.png>")?;
+            shot(Path::new(out))
+        }
         _ => bail!("использование: cargo xtask oracle setup|steam [--ui]|run [--no-hud] [--no-shim] [--no-overrides]|kill|status [игра] [--no-esync]"),
     }
 }
@@ -319,6 +325,26 @@ fn run(c: &Ctx, opts: RunOpts) -> Result<()> {
     cmd.stdout(log.try_clone()?).stderr(log).spawn().context("запуск игры")?;
     println!("{exe} запущен из {}", c.game.sandbox_dir.display());
     println!("журнал кадров: {} (отчёт: cargo xtask bench {})", frames_csv.display(), frames_csv.display());
+    Ok(())
+}
+
+/// Снимок окна игры через `screencapture -l <номер окна>` (номер — по заголовку окна).
+fn shot(out: &Path) -> Result<()> {
+    let title = std::env::var("GRACE_WINDOW").unwrap_or_else(|_| "ELDEN RING".into());
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tools/scripts/window-id.swift");
+    let id = Command::new("xcrun").arg("swift").arg(&script).arg(&title).output().context("xcrun swift")?;
+    let id = String::from_utf8_lossy(&id.stdout).trim().to_owned();
+    if id.is_empty() {
+        bail!("окно «{title}» не найдено — игра запущена?");
+    }
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let status = Command::new("screencapture").args(["-x", "-o", &format!("-l{id}")]).arg(out).status()?;
+    if !status.success() {
+        bail!("screencapture завершился с ошибкой");
+    }
+    println!("снимок окна {id}: {}", out.display());
     Ok(())
 }
 

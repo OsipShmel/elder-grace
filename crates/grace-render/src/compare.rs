@@ -41,10 +41,24 @@ fn resize(img: &Rgba, w: usize, h: usize) -> Rgba {
     Rgba { w, h, px }
 }
 
-/// `left` и `right` бок о бок; правый приводится к размеру левого.
+/// Обрезка по центру до соотношения сторон `w:h` (чёрные поля окна вокруг кадра игры).
+fn crop_to_aspect(img: Rgba, w: usize, h: usize) -> Rgba {
+    let (cw, ch) = if img.w * h > img.h * w { (img.h * w / h, img.h) } else { (img.w, img.w * h / w) };
+    if (cw, ch) == (img.w, img.h) {
+        return img;
+    }
+    let (x0, y0) = ((img.w - cw) / 2, (img.h - ch) / 2);
+    let mut px = Vec::with_capacity(cw * ch * 4);
+    for y in y0..y0 + ch {
+        px.extend_from_slice(&img.px[(y * img.w + x0) * 4..(y * img.w + x0 + cw) * 4]);
+    }
+    Rgba { w: cw, h: ch, px }
+}
+
+/// `left` и `right` бок о бок; правый обрезается по центру до пропорций левого и приводится к его размеру.
 pub fn side_by_side(left: &Path, right: &Path, out: &Path) -> Result<()> {
     let l = load(left)?;
-    let r = resize(&load(right)?, l.w, l.h);
+    let r = resize(&crop_to_aspect(load(right)?, l.w, l.h), l.w, l.h);
     let (w, h) = (l.w * 2, l.h);
     let mut px = vec![0; w * h * 4];
     for y in 0..h {

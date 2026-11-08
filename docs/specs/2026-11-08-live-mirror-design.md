@@ -1,6 +1,6 @@
 # Live mirror (C2-b, milestone B0): design
 
-Date: 2026-11-08. Status: design approved in conversation; spec under review.
+Date: 2026-11-08. Status: direction, not a contract: implementation stays pragmatic and may simplify the parts below (the user asked for no up-front architecture).
 
 ## Goal
 

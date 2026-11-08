@@ -80,8 +80,12 @@ Paths in a cargo config are relative to the directory that contains `.cargo/`. C
 cargo xtask oracle setup          # Wine prefix, compat shims, crash reporter, Windows Steam
 cargo xtask oracle steam --ui     # you log into Steam yourself, once per prefix
 cargo xtask oracle run --label L  # the game from the sandbox, with shims, Metal HUD, frame log
-cargo xtask oracle status | kill | shot out.png
+cargo xtask oracle status          # what is running in the prefix
+cargo xtask oracle kill            # stop the game and every Steam process in the prefix
+cargo xtask oracle shot out.png    # screenshot of the game window
 ```
+
+All commands: [docs/COMMANDS.md](docs/COMMANDS.md).
 
 What to run comes from `[games.<id>]` in `config/local.toml`. Logins are always entered by you; the tools never handle passwords. Nothing here is meant for online play, and anti-cheat is never bypassed.
 

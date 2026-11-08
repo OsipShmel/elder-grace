@@ -255,6 +255,7 @@ fn print(cli: &Cli, response: &Response) -> Result<()> {
                 println!("  {a:#x}");
             }
         }
+        Response::Mirror { generation } => println!("mirror: region set {generation}"),
         Response::Error { message } => bail!("error: {message}"),
     }
     Ok(())

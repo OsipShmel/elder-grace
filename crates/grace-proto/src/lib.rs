@@ -6,6 +6,9 @@ use std::io::{self, BufRead, Write};
 
 use serde::{Deserialize, Serialize};
 
+pub mod mirror;
+pub use mirror::MirrorRegion;
+
 pub const PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -24,6 +27,9 @@ pub enum Request {
     Peek { addr: u64, len: u32 },
     /// Debug: addresses of consecutive f32 values within the [min, max] ranges (4-byte step).
     FindFloats { ranges: Vec<(f32, f32)>, limit: u32 },
+    /// Live mirror (dxgi shim): copy these regions into the mirror file at every `Present`.
+    /// An empty list stops mirroring. See `mirror`.
+    Mirror { regions: Vec<MirrorRegion> },
 }
 
 /// Where the fields are in the camera cbuffer (byte offsets from the start of the cbuffer).
@@ -73,6 +79,7 @@ pub enum Response {
     Camera(CameraReport),
     Peek { addr: u64, bytes: Vec<u8> },
     Found { regions: usize, addrs: Vec<u64> },
+    Mirror { generation: u32 },
     Error {
         message: String,
     },

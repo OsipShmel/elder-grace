@@ -357,6 +357,7 @@ fn serve(conn: TcpStream) {
                 let (regions, addrs) = crate::resources::find_floats(&ranges, limit);
                 Response::Found { regions, addrs }
             }
+            Ok(Some(Request::Mirror { .. })) => Response::Error { message: "the live mirror lives in the dxgi shim (port 47321)".into() },
             Ok(Some(Request::Bound { ms })) => {
                 if crate::recipes::active() {
                     Response::Bound(bound_report(ms))

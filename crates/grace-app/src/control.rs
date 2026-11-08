@@ -59,7 +59,7 @@ fn handle(conn: UnixStream, stats: &SharedStats) {
                 Ok(s) => Response::Stats(s.clone()),
                 Err(_) => Response::Error { message: "stats unavailable".into() },
             },
-            Ok(Some(Request::Overrides { .. } | Request::Bound { .. } | Request::Camera { .. } | Request::Peek { .. } | Request::FindFloats { .. })) => Response::Error { message: "shader overrides and memory requests exist only in the d3d12 shim".into() },
+            Ok(Some(Request::Overrides { .. } | Request::Bound { .. } | Request::Camera { .. } | Request::Peek { .. } | Request::FindFloats { .. } | Request::Mirror { .. })) => Response::Error { message: "shader overrides, memory requests and the live mirror exist only in the in-game shims".into() },
             Err(e) => Response::Error { message: format!("bad request: {e}") },
         };
         if write_message(&mut writer, &response).is_err() {

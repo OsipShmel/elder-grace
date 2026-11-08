@@ -7,7 +7,8 @@
 //!
 //! - Log: `GRACE_FRAMETIME_LOG`, a `frame,t_ms,dt_ms` CSV (t from the first Present).
 //! - Live stats: TCP `127.0.0.1:GRACE_SHIM_PORT` (47321 by default), protocol
-//!   `grace-proto` (`ping`, `stats`), read with `grace-ctl --tcp`.
+//!   `grace-proto` (`ping`, `stats`, `mirror`), read with `grace-ctl --tcp`.
+//! - Live mirror: `GRACE_MIRROR` (a mapped file, `mirror.rs`).
 
 #![cfg(all(windows, target_arch = "x86_64"))]
 #![allow(non_snake_case, clippy::missing_safety_doc)]
@@ -16,6 +17,7 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod frames;
+mod mirror;
 
 // ---- export forwarding --------------------------------------------------------------------
 
@@ -178,6 +180,7 @@ unsafe fn adopt_swapchain(obj: *mut c_void) {
     if first {
         debug("swapchain hooked: Present/Present1 measure frame time");
         frames::start();
+        mirror::start();
     }
 }
 

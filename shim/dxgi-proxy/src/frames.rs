@@ -81,6 +81,7 @@ pub fn on_present(flags: u32) {
     s.last = Some(now);
     s.frames += 1;
     let frame = s.frames;
+    crate::mirror::on_present(frame);
     if let Some(w) = s.log.as_mut() {
         let _ = writeln!(w, "{frame},{:.3},{dt:.3}", (now - origin).as_secs_f64() * 1000.0);
         if frame.is_multiple_of(120) {
@@ -127,6 +128,10 @@ fn serve(conn: TcpStream) {
                 version: env!("CARGO_PKG_VERSION").into(),
             },
             Ok(Some(Request::Stats)) => Response::Stats(snapshot()),
+            Ok(Some(Request::Mirror { regions })) => match crate::mirror::set_regions(regions) {
+                Ok(generation) => Response::Mirror { generation },
+                Err(message) => Response::Error { message },
+            },
             Ok(Some(Request::Overrides { .. } | Request::Bound { .. } | Request::Camera { .. } | Request::Peek { .. } | Request::FindFloats { .. })) => Response::Error { message: "overrides and memory requests live in the d3d12 shim (port 47322)".into() },
             Err(e) => Response::Error { message: format!("bad request: {e}") },
         };

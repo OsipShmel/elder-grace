@@ -1,5 +1,6 @@
 //! Viewer window: CAMetalLayer, mouse orbit camera, wheel to zoom,
 //! WASD/QE to fly (Shift for faster), Esc/Cmd+Q to quit.
+//! An optional camera driver (`run_with`) can steer the camera every frame (a live game).
 
 use anyhow::{Context, Result, bail};
 use objc2::rc::{Retained, autoreleasepool};
@@ -26,8 +27,12 @@ struct Live {
     window: Window,
 }
 
+/// Called once per frame before drawing; may move the camera and return a new window title.
+pub type CameraDriver = Box<dyn FnMut(&mut Camera) -> Option<String>>;
+
 struct Viewer {
     title: String,
+    driver: Option<CameraDriver>,
     gpu: Gpu,
     scene: GpuScene,
     camera: Camera,
@@ -77,6 +82,12 @@ impl Viewer {
 
     fn draw(&mut self) {
         self.fly();
+        if let Some(driver) = self.driver.as_mut()
+            && let Some(title) = driver(&mut self.camera)
+            && let Some(live) = &self.live
+        {
+            live.window.set_title(&title);
+        }
         let Some(live) = &self.live else { return };
         autoreleasepool(|_| {
             let Some(drawable) = live.layer.nextDrawable() else { return };
@@ -159,9 +170,14 @@ impl ApplicationHandler for Viewer {
 
 /// Opens a window and runs the loop until it is closed.
 pub fn run(title: &str, gpu: Gpu, scene: GpuScene, camera: Camera) -> Result<()> {
+    run_with(title, gpu, scene, camera, None)
+}
+
+/// Like `run`, with a camera driver called every frame.
+pub fn run_with(title: &str, gpu: Gpu, scene: GpuScene, camera: Camera, driver: Option<CameraDriver>) -> Result<()> {
     let el = EventLoop::new().context("event loop")?;
     el.set_control_flow(ControlFlow::Poll);
-    let mut v = Viewer { title: title.to_owned(), gpu, scene, camera, live: None, dragging: false, last: None, modifiers: ModifiersState::empty(), keys: Default::default(), last_frame: None, error: None };
+    let mut v = Viewer { title: title.to_owned(), driver, gpu, scene, camera, live: None, dragging: false, last: None, modifiers: ModifiersState::empty(), keys: Default::default(), last_frame: None, error: None };
     el.run_app(&mut v)?;
     v.error.map_or(Ok(()), Err)
 }

@@ -1,0 +1,16 @@
+[package]
+name = "grace-live"
+description = "Elder Grace host side of the live mirror: shim client, mirror reader, live session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+grace-proto.workspace = true
+anyhow.workspace = true
+memmap2 = "0.9"
+
+[lints]
+workspace = true

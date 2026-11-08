@@ -322,8 +322,14 @@ fn run(c: &Ctx, opts: RunOpts) -> Result<()> {
     std::fs::create_dir_all(&frames_dir)?;
     let frames_csv = frames_dir.join(format!("{label}.csv"));
     cmd.env("GRACE_FRAMETIME_LOG", format!("Z:{}", frames_csv.display()).replace('/', "\\"));
+    // Live mirror (dxgi proxy): a fresh record each run, so a host never reads a previous run's frames.
+    let mirror = grace_live::mirror_file(&c.local, &c.game_key);
+    std::fs::create_dir_all(mirror.parent().context("mirror dir")?)?;
+    let _ = std::fs::remove_file(&mirror);
+    cmd.env("GRACE_MIRROR", format!("Z:{}", mirror.display()).replace('/', "\\"));
     cmd.stdout(log.try_clone()?).stderr(log).spawn().context("starting the game")?;
     println!("{exe} started from {}", c.game.sandbox_dir.display());
+    println!("live mirror: {}", mirror.display());
     println!("frame log: {} (report: cargo xtask bench {})", frames_csv.display(), frames_csv.display());
     Ok(())
 }

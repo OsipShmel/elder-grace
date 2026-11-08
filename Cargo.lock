@@ -602,6 +602,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "grace-live"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "grace-proto",
+ "memmap2",
+]
+
+[[package]]
 name = "grace-proto"
 version = "0.1.0"
 dependencies = [
@@ -2288,6 +2297,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "grace-core",
+ "grace-live",
  "grace-proto",
  "grace-shader",
 ]

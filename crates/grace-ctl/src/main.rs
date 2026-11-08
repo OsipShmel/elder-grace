@@ -275,8 +275,12 @@ fn main() -> Result<()> {
             let r = ask(&mut conn, &Request::Camera { layout })?;
             print(&cli, &r)?;
             if let (Some(out), Response::Camera(rep)) = (save, &r) {
-                let first = rep.candidates.first().context("камера не найдена — нечего сохранять")?;
-                std::fs::write(out, serde_json::to_string_pretty(first)?)?;
+                let mut first = rep.candidates.first().context("камера не найдена — нечего сохранять")?.clone();
+                first.world = rep.world();
+                if let Some(w) = first.world {
+                    println!("мировое положение: ({:.2}, {:.2}, {:.2}) — начало локальной системы ({:.2}, {:.2}, {:.2})", w[0], w[1], w[2], w[0] - first.position[0], w[1] - first.position[1], w[2] - first.position[2]);
+                }
+                std::fs::write(out, serde_json::to_string_pretty(&first)?)?;
                 println!("сохранено: {}", out.display());
             }
             Ok(())

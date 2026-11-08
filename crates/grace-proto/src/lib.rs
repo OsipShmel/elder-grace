@@ -128,6 +128,16 @@ pub struct CameraReport {
     pub same_rotation: Vec<(u64, [f32; 3])>,
 }
 
+impl CameraReport {
+    /// Мировое положение: среди матриц с тем же поворотом — самая далёкая от локальной позиции
+    /// (дальше 10 м; ближние — привязки камеры к игроку в той же локальной системе).
+    pub fn world(&self) -> Option<[f32; 3]> {
+        let local = self.candidates.first()?.position;
+        let dist = |t: &[f32; 3]| (0..3).map(|a| (t[a] - local[a]).powi(2)).sum::<f32>().sqrt();
+        self.same_rotation.iter().map(|(_, t)| *t).filter(|t| dist(t) > 10.0).max_by(|a, b| dist(a).total_cmp(&dist(b)))
+    }
+}
+
 /// Перенос матрицы 4×4 по адресу, если её поворот совпадает с `rot` (столбцы по 3, по столбцам)
 /// с точностью 1e-4, а нижняя строка — (0, 0, 0, 1). Обе ориентации хранения.
 pub fn rotation_match(rot: &[f32; 9], f: &dyn Fn(usize) -> f32) -> Option<[f32; 3]> {
@@ -170,6 +180,10 @@ pub struct CameraSample {
     pub proj: [f32; 16],
     #[serde(default)]
     pub screen: Option<[f32; 4]>,
+    /// Мировое положение камеры, если камера в cbuffer'е локальная (матрица с тем же поворотом
+    /// и «мировым» переносом, см. `CameraReport::world`).
+    #[serde(default)]
+    pub world: Option<[f32; 3]>,
 }
 
 /// Шейдеры, участвовавшие в кадрах за окно записи.
@@ -251,7 +265,7 @@ fn camera_oriented(layout: &CameraLayout, f: &dyn Fn(usize) -> f32, transposed: 
         return None;
     }
     let screen = layout.screen.map(|s| std::array::from_fn(|k| f(s as usize + k * 4))).filter(|v: &[f32; 4]| v.iter().all(|x| x.is_finite()));
-    Some(CameraSample { position, inv_view, proj: proj_m, screen })
+    Some(CameraSample { position, inv_view, proj: proj_m, screen, world: None })
 }
 
 pub fn write_message<W: Write, T: Serialize>(w: &mut W, msg: &T) -> io::Result<()> {

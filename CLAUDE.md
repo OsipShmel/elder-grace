@@ -69,7 +69,7 @@ More in `docs/ARCHITECTURE.md` and `docs/decisions/0001-strategy-oracle-first.md
 4. At the end of a session (or before a long operation that may be interrupted) add an entry to `docs/PROGRESS.md`: what was done, how it was checked, numbers (if they changed), what is next, blockers. **This is the only memory between sessions**; write so that the next session continues without questions.
 5. Decisions that are hard to reverse (stack, cache format, shim protocol, coordinate system, licenses, repository structure) become `docs/decisions/NNNN-name.md`.
 6. Knowledge about a game's formats and internals goes into `../grace-<game>/docs/FORMATS.md`. Shared mechanisms (shims, shader pipeline, preparation, renderer) go into `docs/ARCHITECTURE.md`.
-7. **The core rule:** code enters `crates/grace-*` only if it contains no knowledge of a specific game. Do not generalize in advance: generalize when a second game or a clear second point of use appears.
+7. **The core rule:** code enters `crates/grace-*` only if it contains no knowledge of a specific game. New engine subsystems (from C2-b on) are designed for many games from the start: the engine owns the mechanism, the game repository plugs its knowledge in through a small adapter trait, engine types use the engine's own conventions. Still no speculative features: build only what the current milestone needs. Older code is brought in line when it is touched.
 8. **Versions:** the public library crates (`grace-core`, `grace-proto`, `grace-render`) are released together under one workspace version and a `vX.Y.Z` tag; a release updates `CHANGELOG.md`. Game repositories pin a tag; joint work uses a local `[patch]` (see `README.md`).
 
 ## How to check work

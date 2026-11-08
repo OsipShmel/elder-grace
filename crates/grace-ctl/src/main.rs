@@ -205,7 +205,7 @@ fn print(cli: &Cli, response: &Response) -> Result<()> {
         }
         Response::Bound(r) => println!("за {} мс шейдеров: {}", r.ms, r.shaders.len()),
         Response::Camera(r) => {
-            println!("отображённых буферов {} ({} МБ), кандидатов-камер {}", r.buffers, r.bytes >> 20, r.candidates.len());
+            println!("участков памяти {} ({} МБ), кандидатов-камер {}", r.buffers, r.bytes >> 20, r.candidates.len());
             for c in &r.candidates {
                 // column_major: [r][c] → индекс c·4 + r; вперёд — столбец 2, P[1][1] = ctg(fovy/2).
                 let fwd = [c.inv_view[8], c.inv_view[9], c.inv_view[10]];

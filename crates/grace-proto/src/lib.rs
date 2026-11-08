@@ -17,7 +17,7 @@ pub enum Request {
     Overrides { op: OverrideOp },
     /// Какие шейдеры рисуют сейчас: запись привязок PSO в течение `ms` миллисекунд.
     Bound { ms: u32 },
-    /// Камера из отображённых в память буферов констант (shim d3d12). Раскладка cbuffer'а —
+    /// Камера из памяти процесса игры (shim d3d12). Раскладка cbuffer'а —
     /// знание об игре, поэтому приходит в запросе (`grace-<игра>/data/camera-layout.json`).
     Camera { layout: CameraLayout },
 }
@@ -35,7 +35,7 @@ pub struct CameraLayout {
     /// float4 размера экрана (необязательно).
     #[serde(default)]
     pub screen: Option<u32>,
-    /// Шаг поиска (выравнивание CBV, обычно 256).
+    /// Выравнивание CBV на GPU (256); в памяти процесса shim ищет с шагом 16.
     #[serde(default = "default_align")]
     pub align: u32,
 }
@@ -109,7 +109,7 @@ pub struct OverrideStatus {
 /// Найденные камеры: обычно по одной на кадр в кольцевом буфере (значения близки).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CameraReport {
-    /// Сколько отображённых буферов просмотрено и сколько в них байт.
+    /// Сколько участков памяти просмотрено и сколько в них байт.
     pub buffers: usize,
     pub bytes: u64,
     pub candidates: Vec<CameraSample>,
@@ -168,9 +168,21 @@ pub fn camera_at(layout: &CameraLayout, f: &dyn Fn(usize) -> f32) -> Option<Came
     if !close(m(proj, 3, 2).abs(), 1.0, 1e-4) || !close(m(proj, 3, 3), 0.0, 1e-4) || m(proj, 0, 0) <= 0.0 || m(proj, 1, 1) <= 0.0 {
         return None;
     }
-    let read16 = |base: usize| std::array::from_fn(|k| f(base + k * 4));
-    let screen = layout.screen.map(|s| std::array::from_fn(|k| f(s as usize + k * 4)));
-    Some(CameraSample { position, inv_view: read16(inv), proj: read16(proj), screen })
+    let read16 = |base: usize| -> [f32; 16] { std::array::from_fn(|k| f(base + k * 4)) };
+    let (inv_view, proj_m) = (read16(inv), read16(proj));
+    // Не камера, если в матрицах NaN/бесконечность (и JSON такие числа не передаст).
+    if !inv_view.iter().chain(&proj_m).all(|v| v.is_finite()) {
+        return None;
+    }
+    // Поворот камеры ортонормирован: столбцы 0–2 единичные и взаимно перпендикулярны.
+    let col = |c: usize| [inv_view[c * 4], inv_view[c * 4 + 1], inv_view[c * 4 + 2]];
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let (c0, c1, c2) = (col(0), col(1), col(2));
+    if [c0, c1, c2].iter().any(|c| (dot(*c, *c) - 1.0).abs() > 1e-2) || [dot(c0, c1), dot(c0, c2), dot(c1, c2)].iter().any(|d| d.abs() > 1e-2) {
+        return None;
+    }
+    let screen = layout.screen.map(|s| std::array::from_fn(|k| f(s as usize + k * 4))).filter(|v: &[f32; 4]| v.iter().all(|x| x.is_finite()));
+    Some(CameraSample { position, inv_view, proj: proj_m, screen })
 }
 
 pub fn write_message<W: Write, T: Serialize>(w: &mut W, msg: &T) -> io::Result<()> {

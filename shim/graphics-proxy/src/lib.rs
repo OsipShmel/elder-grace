@@ -496,12 +496,6 @@ unsafe fn hook_device(dev: *mut c_void) {
     if !d4.is_null() {
         unsafe { release(d4) };
     }
-    let mut d8 = std::ptr::null_mut();
-    let hr = unsafe { qi(dev, &resources::IID_DEVICE8, &mut d8) };
-    let device8 = hr >= 0 && d8 == dev;
-    if !d8.is_null() {
-        unsafe { release(d8) };
-    }
 
     // SAFETY: читаем VTBL_SLOTS указателей из vtable (константные данные фреймворка).
     let mut clone: Box<[usize; VTBL_SLOTS]> = Box::new([0; VTBL_SLOTS]);
@@ -514,16 +508,6 @@ unsafe fn hook_device(dev: *mut c_void) {
     set(SLOT_GRAPHICS, hooked_graphics as *const () as usize, &ORIG_GRAPHICS);
     set(SLOT_COMPUTE, hooked_compute as *const () as usize, &ORIG_COMPUTE);
     set(SLOT_CREATE_LIST, hooked_create_list as *const () as usize, &ORIG_CREATE_LIST);
-    // Буферы: учёт отображённой памяти (поиск камеры и др. данных кадра).
-    set(resources::SLOT_COMMITTED, resources::hooked_committed as *const () as usize, &resources::ORIG_COMMITTED);
-    set(resources::SLOT_PLACED, resources::hooked_placed as *const () as usize, &resources::ORIG_PLACED);
-    if device4 {
-        set(resources::SLOT_COMMITTED1, resources::hooked_committed1 as *const () as usize, &resources::ORIG_COMMITTED1);
-    }
-    if device8 {
-        set(resources::SLOT_COMMITTED2, resources::hooked_committed2 as *const () as usize, &resources::ORIG_COMMITTED2);
-        set(resources::SLOT_PLACED1, resources::hooked_placed1 as *const () as usize, &resources::ORIG_PLACED1);
-    }
     if device4 {
         set(SLOT_CREATE_LIST1, hooked_create_list1 as *const () as usize, &ORIG_CREATE_LIST1);
     }
@@ -537,10 +521,9 @@ unsafe fn hook_device(dev: *mut c_void) {
     CLONED_VTBL.store(clone.as_ptr() as usize, Ordering::Release);
     unsafe { adopt(dev) };
     debug(&format!(
-        "устройству подставлена своя vtable (потоковые PSO: {}, Device4: {}, Device8: {})",
+        "устройству подставлена своя vtable (потоковые PSO: {}, CreateCommandList1: {})",
         if stream { "да" } else { "нет" },
-        if device4 { "да" } else { "нет" },
-        if device8 { "да" } else { "нет" }
+        if device4 { "да" } else { "нет" }
     ));
     live::start_control();
 }

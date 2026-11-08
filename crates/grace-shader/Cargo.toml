@@ -1,6 +1,6 @@
 [package]
 name = "grace-shader"
-description = "Шейдерный конвейер Elder Grace: корпус шейдеров, разбор контейнеров DXBC/DXIL"
+description = "Elder Grace shader pipeline: shader corpus, DXBC/DXIL container parsing"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

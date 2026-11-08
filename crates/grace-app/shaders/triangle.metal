@@ -1,4 +1,4 @@
-// Тестовый треугольник фазы 0: проверяем, что конвейер Metal живой.
+// Phase 0 test triangle: checks that the Metal pipeline is alive.
 #include <metal_stdlib>
 using namespace metal;
 

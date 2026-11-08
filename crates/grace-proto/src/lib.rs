@@ -1,6 +1,6 @@
-//! Протокол управления: один JSON-объект на строку в обе стороны.
-//! Его же будут говорить `grace-mcp` и shim внутри Wine, поэтому никаких
-//! зависимостей от платформы здесь нет.
+//! Control protocol: one JSON object per line in both directions.
+//! `grace-mcp` and the shim inside Wine will speak it too, so there are no
+//! platform dependencies here.
 
 use std::io::{self, BufRead, Write};
 
@@ -13,33 +13,33 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub enum Request {
     Ping,
     Stats,
-    /// Подмены шейдеров в shim d3d12 (TCP 47322 под эталоном).
+    /// Shader overrides in the d3d12 shim (TCP 47322 under the oracle).
     Overrides { op: OverrideOp },
-    /// Какие шейдеры рисуют сейчас: запись привязок PSO в течение `ms` миллисекунд.
+    /// Which shaders are drawing now: records PSO bindings for `ms` milliseconds.
     Bound { ms: u32 },
-    /// Камера из памяти процесса игры (shim d3d12). Раскладка cbuffer'а —
-    /// знание об игре, поэтому приходит в запросе (`grace-<игра>/data/camera-layout.json`).
+    /// Camera from the game process memory (d3d12 shim). The cbuffer layout is
+    /// knowledge about the game, so it comes with the request (`grace-<game>/data/camera-layout.json`).
     Camera { layout: CameraLayout },
-    /// Отладка: прочитать `len` байт памяти игры по адресу (через ReadProcessMemory — безопасно).
+    /// Debug: read `len` bytes of game memory at an address (via ReadProcessMemory, safe).
     Peek { addr: u64, len: u32 },
-    /// Отладка: адреса подряд идущих f32, попадающих в диапазоны [min, max] (шаг 4 байта).
+    /// Debug: addresses of consecutive f32 values within the [min, max] ranges (4-byte step).
     FindFloats { ranges: Vec<(f32, f32)>, limit: u32 },
 }
 
-/// Где в cbuffer'е камеры лежат поля (байтовые смещения от начала cbuffer'а).
-/// Матрицы — `column_major` HLSL: элемент [строка r][столбец c] по смещению c·16 + r·4.
+/// Where the fields are in the camera cbuffer (byte offsets from the start of the cbuffer).
+/// Matrices are HLSL `column_major`: element [row r][column c] is at offset c*16 + r*4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CameraLayout {
-    /// float3 положения камеры в мире.
+    /// float3 camera position in the world.
     pub position: u32,
-    /// float4x4 «вид → мир»; столбец 3 должен совпасть с `position` — это и есть проверка.
+    /// float4x4 view-to-world; column 3 must match `position`, which is the check.
     pub inv_view: u32,
-    /// float4x4 проекции.
+    /// float4x4 projection.
     pub proj: u32,
-    /// float4 размера экрана (необязательно).
+    /// float4 screen size (optional).
     #[serde(default)]
     pub screen: Option<u32>,
-    /// Выравнивание CBV на GPU (256); в памяти процесса shim ищет с шагом 16.
+    /// CBV alignment on the GPU (256); in process memory the shim searches with a 16-byte step.
     #[serde(default = "default_align")]
     pub align: u32,
 }
@@ -55,7 +55,7 @@ pub enum OverrideOp {
     On,
     Off,
     Toggle,
-    /// Перечитать каталог подмен и пересоздать подменённые PSO.
+    /// Re-read the override directory and recreate overridden PSOs.
     Reload,
 }
 
@@ -81,7 +81,7 @@ pub enum Response {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Stats {
     pub frames: u64,
-    /// Среднее время кадра CPU-стороны за последнюю секунду, мс.
+    /// Average CPU-side frame time over the last second, ms.
     pub frame_ms: f64,
     pub fps: f64,
     pub drawable_width: u32,
@@ -89,48 +89,48 @@ pub struct Stats {
     pub device: String,
 }
 
-/// Состояние подмен шейдеров в shim d3d12.
+/// Shader override state in the d3d12 shim.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OverrideStatus {
-    /// Подменённые PSO подставляются в командные списки.
+    /// Overridden PSOs are substituted into command lists.
     pub enabled: bool,
-    /// Файлов подмен загружено из `GRACE_SHADER_OVERRIDE`.
+    /// Override files loaded from `GRACE_SHADER_OVERRIDE`.
     pub shaders_loaded: usize,
-    /// Пар PSO «оригинал → подменённый».
+    /// "original -> override" PSO pairs.
     pub pairs: usize,
-    /// Подменённых PSO, которые D3DMetal не смог создать (игра получила оригинал).
+    /// Override PSOs that D3DMetal failed to create (the game got the original).
     pub failed: usize,
-    /// Сколько раз подставлен подменённый PSO с запуска.
+    /// How many times an override PSO has been substituted since start.
     pub swaps: u64,
-    /// Применённые подмены: `<хеш>.<стадия>`.
+    /// Applied overrides: `<hash>.<stage>`.
     pub applied: Vec<String>,
-    /// Записанных рецептов PSO (для перезагрузки с диска).
+    /// Recorded PSO recipes (for reloading from disk).
     #[serde(default)]
     pub recipes: usize,
-    /// Итог последней перезагрузки, пусто — не было.
+    /// Result of the last reload; empty if there was none.
     #[serde(default)]
     pub last_reload: String,
 }
 
-/// Найденные камеры: обычно по одной на кадр в кольцевом буфере (значения близки).
+/// Cameras found: usually one per frame in a ring buffer (values are close).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CameraReport {
-    /// Сколько участков памяти просмотрено и сколько в них байт.
+    /// How many memory regions were scanned and how many bytes they hold.
     pub buffers: usize,
     pub bytes: u64,
     pub candidates: Vec<CameraSample>,
-    /// Отладка: перспективные проекции где угодно в памяти (адрес, fovy°, P00/P11).
+    /// Debug: perspective projections anywhere in memory (address, fovy°, P00/P11).
     #[serde(default)]
     pub projections: Vec<(u64, f32, f32)>,
-    /// Матрицы с тем же поворотом, что у первой камеры, но другим переносом (адрес, перенос) —
-    /// кандидаты в «мировую» камеру, если камера в cbuffer'е локальная.
+    /// Matrices with the same rotation as the first camera but a different translation (address, translation):
+    /// candidates for the "world" camera when the cbuffer camera is local.
     #[serde(default)]
     pub same_rotation: Vec<(u64, [f32; 3])>,
 }
 
 impl CameraReport {
-    /// Мировое положение: среди матриц с тем же поворотом — самая далёкая от локальной позиции
-    /// (дальше 10 м; ближние — привязки камеры к игроку в той же локальной системе).
+    /// World position: among the matrices with the same rotation, the one farthest from the local position
+    /// (more than 10 m away; closer ones are player-attached camera copies in the same local space).
     pub fn world(&self) -> Option<[f32; 3]> {
         let local = self.candidates.first()?.position;
         let dist = |t: &[f32; 3]| (0..3).map(|a| (t[a] - local[a]).powi(2)).sum::<f32>().sqrt();
@@ -138,8 +138,8 @@ impl CameraReport {
     }
 }
 
-/// Перенос матрицы 4×4 по адресу, если её поворот совпадает с `rot` (столбцы по 3, по столбцам)
-/// с точностью 1e-4, а нижняя строка — (0, 0, 0, 1). Обе ориентации хранения.
+/// Translation of the 4x4 matrix at the address if its rotation matches `rot` (3 per column, column-major)
+/// within 1e-4 and the bottom row is (0, 0, 0, 1). Both storage orders.
 pub fn rotation_match(rot: &[f32; 9], f: &dyn Fn(usize) -> f32) -> Option<[f32; 3]> {
     for transposed in [false, true] {
         let m = |r: usize, c: usize| if transposed { f(r * 16 + c * 4) } else { f(c * 16 + r * 4) };
@@ -156,7 +156,7 @@ pub fn rotation_match(rot: &[f32; 9], f: &dyn Fn(usize) -> f32) -> Option<[f32; 
     None
 }
 
-/// Перспективная проекция по адресу (column_major или построчно): (fovy в градусах, P00/P11).
+/// Perspective projection at the address (column_major or row-major): (fovy in degrees, P00/P11).
 pub fn projection_at(f: &dyn Fn(usize) -> f32) -> Option<(f32, f32)> {
     for transposed in [false, true] {
         let m = |r: usize, c: usize| if transposed { f(r * 16 + c * 4) } else { f(c * 16 + r * 4) };
@@ -175,45 +175,45 @@ pub fn projection_at(f: &dyn Fn(usize) -> f32) -> Option<(f32, f32)> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CameraSample {
     pub position: [f32; 3],
-    /// Как в памяти (column_major: по столбцам).
+    /// As in memory (column_major: by columns).
     pub inv_view: [f32; 16],
     pub proj: [f32; 16],
     #[serde(default)]
     pub screen: Option<[f32; 4]>,
-    /// Мировое положение камеры, если камера в cbuffer'е локальная (матрица с тем же поворотом
-    /// и «мировым» переносом, см. `CameraReport::world`).
+    /// Camera world position if the cbuffer camera is local (a matrix with the same rotation
+    /// and a "world" translation, see `CameraReport::world`).
     #[serde(default)]
     pub world: Option<[f32; 3]>,
 }
 
-/// Шейдеры, участвовавшие в кадрах за окно записи.
+/// Shaders that took part in frames during the recording window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BoundReport {
     pub ms: u32,
-    /// Разных PSO привязано за окно.
+    /// Distinct PSOs bound during the window.
     pub pipelines: usize,
-    /// PSO без рецепта (шейдеры неизвестны).
+    /// PSOs without a recipe (shaders unknown).
     pub unknown: usize,
-    /// По убыванию числа привязок.
+    /// By bind count, descending.
     pub shaders: Vec<BoundShader>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BoundShader {
-    /// `<хеш>.<стадия>` — как в дампе и в каталоге подмен.
+    /// `<hash>.<stage>`, as in the dump and in the override directory.
     pub name: String,
-    /// Привязок PSO с этим шейдером за окно.
+    /// PSO binds with this shader during the window.
     pub binds: u64,
-    /// Разных PSO с этим шейдером.
+    /// Distinct PSOs with this shader.
     pub pipelines: u32,
-    /// DXIL (SM6) — иначе DXBC (SM4/5).
+    /// DXIL (SM6); otherwise DXBC (SM4/5).
     pub dxil: bool,
 }
 
-/// Проверка кандидата по раскладке; `f(off)` читает f32 по смещению от начала cbuffer'а.
+/// Checks a candidate against the layout; `f(off)` reads an f32 at an offset from the start of the cbuffer.
 pub fn camera_at(layout: &CameraLayout, f: &dyn Fn(usize) -> f32) -> Option<CameraSample> {
-    // Шейдер объявляет матрицы column_major, но на стороне CPU игра может хранить их
-    // построчно — пробуем обе ориентации, на выходе всегда по столбцам.
+    // The shader declares column_major matrices, but on the CPU side the game may store them
+    // row-major: try both orders, the output is always column-major.
     camera_oriented(layout, f, false).or_else(|| camera_oriented(layout, f, true))
 }
 
@@ -224,17 +224,17 @@ fn camera_oriented(layout: &CameraLayout, f: &dyn Fn(usize) -> f32, transposed: 
     if !position.iter().all(|v| v.is_finite()) || len < 1e-3 || len > 1e6 {
         return None;
     }
-    // [r][c]: по столбцам — смещение c·16 + r·4, построчно — r·16 + c·4.
+    // [r][c]: column-major offset c*16 + r*4, row-major r*16 + c*4.
     let m = |base: usize, r: usize, c: usize| if transposed { f(base + r * 16 + c * 4) } else { f(base + c * 16 + r * 4) };
     let close = |a: f32, b: f32, eps: f32| (a - b).abs() <= eps;
     let eps = 1e-3 * (1.0 + len);
-    // Перенос «вид → мир» = положение камеры, либо 0 (рендер относительно камеры).
+    // View-to-world translation = camera position, or 0 (camera-relative rendering).
     let absolute = (0..3).all(|r| close(m(inv, r, 3), position[r], eps));
     let relative = (0..3).all(|r| close(m(inv, r, 3), 0.0, 1e-4));
     if !(absolute || relative) || !close(m(inv, 3, 3), 1.0, 1e-4) || !(0..3).all(|c| close(m(inv, 3, c), 0.0, 1e-4)) {
         return None;
     }
-    // Размер экрана (если задан): ширина и высота — правдоподобные целые пиксели.
+    // Screen size (if present): width and height are plausible whole pixels.
     if let Some(sc) = layout.screen {
         let (w, h) = (f(sc as usize), f(sc as usize + 4));
         let pixels = |v: f32| (64.0..=16384.0).contains(&v) && (v - v.round()).abs() < 1e-3;
@@ -242,24 +242,24 @@ fn camera_oriented(layout: &CameraLayout, f: &dyn Fn(usize) -> f32, transposed: 
             return None;
         }
     }
-    // Перспектива: P[3][2] = ±1, P[3][3] = 0, P[0][0] и P[1][1] > 0.
+    // Perspective: P[3][2] = ±1, P[3][3] = 0, P[0][0] and P[1][1] > 0.
     if !close(m(proj, 3, 2).abs(), 1.0, 1e-4) || !close(m(proj, 3, 3), 0.0, 1e-4) || m(proj, 0, 0) <= 0.0 || m(proj, 1, 1) <= 0.0 {
         return None;
     }
     let canon = |base: usize| -> [f32; 16] { std::array::from_fn(|k| m(base, k % 4, k / 4)) };
     let (inv_view, proj_m) = (canon(inv), canon(proj));
-    // Не камера, если в матрицах NaN/бесконечность (и JSON такие числа не передаст).
+    // Not a camera if the matrices contain NaN/infinity (JSON could not carry those either).
     if !inv_view.iter().chain(&proj_m).all(|v| v.is_finite()) {
         return None;
     }
-    // Поворот камеры ортонормирован: столбцы 0–2 единичные и взаимно перпендикулярны.
+    // Camera rotation is orthonormal: columns 0-2 are unit length and mutually perpendicular.
     let col = |c: usize| [inv_view[c * 4], inv_view[c * 4 + 1], inv_view[c * 4 + 2]];
     let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     let (c0, c1, c2) = (col(0), col(1), col(2));
     if [c0, c1, c2].iter().any(|c| (dot(*c, *c) - 1.0).abs() > 1e-2) || [dot(c0, c1), dot(c0, c2), dot(c1, c2)].iter().any(|d| d.abs() > 1e-2) {
         return None;
     }
-    // Разумный угол обзора: 10°..150° (P[1][1] = ctg(fovy/2)).
+    // Sensible field of view: 10°..150° (P[1][1] = cot(fovy/2)).
     let fovy = 2.0 * (1.0 / proj_m[5]).atan();
     if !(0.17..2.62).contains(&fovy) {
         return None;
@@ -274,7 +274,7 @@ pub fn write_message<W: Write, T: Serialize>(w: &mut W, msg: &T) -> io::Result<(
     w.flush()
 }
 
-/// `Ok(None)` — собеседник закрыл соединение.
+/// `Ok(None)`: the peer closed the connection.
 pub fn read_message<R: BufRead, T: for<'de> Deserialize<'de>>(r: &mut R) -> io::Result<Option<T>> {
     let mut line = String::new();
     if r.read_line(&mut line)? == 0 {
@@ -352,7 +352,7 @@ mod tests {
         let mut cb = vec![0f32; 512 / 4];
         cb[4..6].copy_from_slice(&[1728.0, 1117.0]);
         cb[12..15].copy_from_slice(&[10.0, 2.0, -5.0]);
-        // inv_view: единичный поворот, перенос в столбце 3 (смещение 320 + 48).
+        // inv_view: identity rotation, translation in column 3 (offset 320 + 48).
         for (r, c) in [(0, 0), (1, 1), (2, 2), (3, 3)] {
             cb[(320 + c * 16 + r * 4) / 4] = 1.0;
         }
@@ -363,7 +363,7 @@ mod tests {
         let f = |o: usize| cb[o / 4];
         let s = camera_at(&layout, &f).unwrap();
         assert_eq!(s.position, [10.0, 2.0, -5.0]);
-        // Та же камера, но матрицы построчно: тоже находится, на выходе — по столбцам.
+        // Same camera with row-major matrices: also found, output is column-major.
         let mut t = cb.clone();
         for base in [320usize, 256] {
             for r in 0..4 {
@@ -373,14 +373,14 @@ mod tests {
             }
         }
         assert_eq!(camera_at(&layout, &|o: usize| t[o / 4]).unwrap(), s);
-        // Рендер относительно камеры: перенос 0, положение отдельно — тоже камера.
+        // Camera-relative rendering: translation 0, position separate: still a camera.
         let mut rel = cb.clone();
         rel[(320 + 48) / 4..(320 + 60) / 4].copy_from_slice(&[0.0; 3]);
         assert!(camera_at(&layout, &|o: usize| rel[o / 4]).is_some());
         let mut tiny = cb.clone();
-        tiny[4] = 1.0; // «экран» 1×1117 — не камера
+        tiny[4] = 1.0; // a 1x1117 "screen" is not a camera
         assert!(camera_at(&layout, &|o: usize| tiny[o / 4]).is_none());
-        cb[(320 + 52) / 4] = 3.0; // перенос не совпал с положением — не камера
+        cb[(320 + 52) / 4] = 3.0; // translation does not match the position: not a camera
         assert!(camera_at(&layout, &|o: usize| cb[o / 4]).is_none());
     }
 }

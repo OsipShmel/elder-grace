@@ -1,6 +1,6 @@
 [package]
 name = "grace-ctl"
-description = "CLI управления запущенным рантаймом Elder Grace"
+description = "CLI for controlling a running Elder Grace runtime and in-game shim"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

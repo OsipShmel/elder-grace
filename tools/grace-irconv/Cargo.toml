@@ -1,6 +1,6 @@
 [package]
 name = "grace-irconv"
-description = "Офлайн-конвертер DXIL → metallib через Apple Metal Shader Converter (libmetalirconverter из GPTK); x86_64, под Rosetta"
+description = "Offline DXIL -> metallib converter via Apple Metal Shader Converter (libmetalirconverter from GPTK); x86_64, runs under Rosetta"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

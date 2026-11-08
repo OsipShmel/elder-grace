@@ -1,13 +1,13 @@
-//! `crash-probe.exe` — замена `winedbg --auto` для префиксов Elder Grace.
+//! `crash-probe.exe`: a `winedbg --auto` replacement for Elder Grace prefixes.
 //!
-//! Wine при необработанном исключении запускает отладчик из
+//! On an unhandled exception Wine starts the debugger from
 //! `HKLM\Software\Microsoft\Windows NT\CurrentVersion\AeDebug\Debugger`
-//! с аргументами `<pid> <event>`. В GPTK `winedbg` нет, поэтому падения немые.
-//! Этот отладчик подключается к процессу, ловит исключение и пишет отчёт:
-//! код, адрес как `модуль+оффсет`, регистры, кандидаты в адреса возврата со стека
-//! (значения, указывающие внутрь модулей сразу после инструкции `call`), список модулей.
+//! with `<pid> <event>` arguments. GPTK has no `winedbg`, so crashes are silent.
+//! This debugger attaches to the process, catches the exception and writes a report:
+//! code, address as `module+offset`, registers, return address candidates from the stack
+//! (values pointing into modules right after a `call` instruction), the module list.
 //!
-//! Отчёты: `C:\grace-crash\<pid>-<tid>.txt` (в префиксе) и stdout.
+//! Reports: `C:\grace-crash\<pid>-<tid>.txt` (in the prefix) and stdout.
 
 #[cfg(all(windows, target_arch = "x86_64"))]
 mod imp {
@@ -22,11 +22,11 @@ mod imp {
         pid: u32,
         tid: u32,
         _pad: u32,
-        // union u: EXCEPTION_DEBUG_INFO и др.; первые поля — EXCEPTION_RECORD.
+        // union u: EXCEPTION_DEBUG_INFO etc.; the first fields are an EXCEPTION_RECORD.
         u: [u64; 20],
     }
 
-    /// CONTEXT x64: нужны только целочисленные регистры и RIP (смещение 0x78..0x100).
+    /// x64 CONTEXT: only the integer registers and RIP are needed (offset 0x78..0x100).
     #[repr(C, align(16))]
     struct Context {
         home: [u64; 6],
@@ -81,7 +81,7 @@ mod imp {
     fn modules(process: Handle) -> Vec<Module> {
         let mut handles = vec![std::ptr::null_mut::<c_void>(); 1024];
         let mut needed = 0u32;
-        // SAFETY: буфер на 1024 хендла, размер передан в байтах.
+        // SAFETY: a buffer for 1024 handles, size passed in bytes.
         let ok = unsafe {
             K32EnumProcessModulesEx(process, handles.as_mut_ptr(), (handles.len() * 8) as u32, &mut needed, 3)
         };
@@ -93,7 +93,7 @@ mod imp {
         for m in handles {
             let mut name = [0u16; 260];
             let mut info = ModuleInfo { base: std::ptr::null_mut(), size: 0, entry: std::ptr::null_mut() };
-            // SAFETY: буферы корректного размера, хендлы получены выше.
+            // SAFETY: buffers of the right size, handles obtained above.
             let n = unsafe { K32GetModuleBaseNameW(process, m, name.as_mut_ptr(), 260) } as usize;
             if unsafe { K32GetModuleInformation(process, m, &mut info, size_of::<ModuleInfo>() as u32) } == 0 {
                 continue;
@@ -111,30 +111,30 @@ mod imp {
     fn locate(mods: &[Module], addr: u64) -> String {
         mods.iter()
             .find(|m| addr >= m.base && addr < m.base + m.size)
-            .map_or_else(|| format!("{addr:#x} (вне модулей)"), |m| format!("{}+{:#x}", m.name, addr - m.base))
+            .map_or_else(|| format!("{addr:#x} (outside modules)"), |m| format!("{}+{:#x}", m.name, addr - m.base))
     }
 
     fn read(process: Handle, addr: u64, buf: &mut [u8]) -> usize {
         let mut got = 0usize;
-        // SAFETY: буфер наш, чтение чужой памяти безопасно для нас при любом исходе.
+        // SAFETY: the buffer is ours; reading another process's memory is safe for us whatever happens.
         unsafe { ReadProcessMemory(process, addr as *const c_void, buf.as_mut_ptr().cast(), buf.len(), &mut got) };
         got
     }
 
-    /// Похоже ли, что перед `addr` стоит инструкция call (E8 rel32, FF /2 с разными ModRM).
+    /// Whether a call instruction seems to precede `addr` (E8 rel32, FF /2 with various ModRM).
     fn after_call(process: Handle, addr: u64) -> bool {
         let mut b = [0u8; 7];
         if read(process, addr.saturating_sub(7), &mut b) != 7 {
             return false;
         }
-        b[2] == 0xE8 // call rel32 (5 байт)
-            || (b[1] == 0xFF && b[2] & 0x38 == 0x10) // call [rip+disp32] (6 байт)
-            || (b[5] == 0xFF && b[6] & 0x38 == 0x10) // call reg (2 байта)
-            || (b[4] == 0xFF && b[5] & 0x38 == 0x10) // call [reg+disp8] (3 байта)
-            || (b[0] == 0xFF && b[1] & 0x38 == 0x10) // call [reg+disp32] (7 байт)
+        b[2] == 0xE8 // call rel32 (5 bytes)
+            || (b[1] == 0xFF && b[2] & 0x38 == 0x10) // call [rip+disp32] (6 bytes)
+            || (b[5] == 0xFF && b[6] & 0x38 == 0x10) // call reg (2 bytes)
+            || (b[4] == 0xFF && b[5] & 0x38 == 0x10) // call [reg+disp8] (3 bytes)
+            || (b[0] == 0xFF && b[1] & 0x38 == 0x10) // call [reg+disp32] (7 bytes)
     }
 
-    /// Читаемая ASCII- или UTF-16-строка длиной от 8 символов по адресу.
+    /// A readable ASCII or UTF-16 string of at least 8 characters at the address.
     fn string_at(process: Handle, addr: u64) -> Option<String> {
         let mut buf = [0u8; 512];
         let got = read(process, addr, &mut buf);
@@ -147,7 +147,7 @@ mod imp {
         if ascii.len() >= 8 && ascii.iter().all(|b| printable(*b)) {
             return Some(String::from_utf8_lossy(&ascii).trim_end().to_string());
         }
-        let wide: Vec<u16> = buf.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|c| *c != 0).collect();
+        let wide: Vec<u16> = buf.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).take_while(|c| *c != 0).collect();
         if wide.len() >= 8 && wide.iter().all(|c| *c < 0x7f && printable(*c as u8)) {
             return Some(format!("(utf16) {}", String::from_utf16_lossy(&wide).trim_end()));
         }
@@ -158,9 +158,9 @@ mod imp {
         let mods = modules(process);
         let mut s = String::new();
         let _ = writeln!(s, "grace crash-probe: pid {pid:#x} tid {tid:#x}");
-        let _ = writeln!(s, "исключение {code:#010x} по адресу {}", locate(&mods, addr));
+        let _ = writeln!(s, "exception {code:#010x} at {}", locate(&mods, addr));
 
-        // SAFETY: OpenThread/GetThreadContext с корректной структурой CONTEXT (выравнивание 16).
+        // SAFETY: OpenThread/GetThreadContext with a correct CONTEXT structure (16-byte aligned).
         let thread = unsafe { OpenThread(THREAD_ALL_ACCESS, 0, tid) };
         let mut ctx: Context = unsafe { std::mem::zeroed() };
         ctx.flags = CONTEXT_CONTROL_INTEGER;
@@ -174,12 +174,12 @@ mod imp {
             let mut stack = vec![0u8; 0x8000];
             let got = read(process, rsp, &mut stack);
 
-            // Строки, на которые указывают регистры и значения со стека: так видно
-            // текст фатальной проверки (`Check failed: …`, `file.cc(123)`), даже без символов.
-            let _ = writeln!(s, "строки рядом с падением:");
+            // Strings that registers and stack values point to: this shows
+            // the text of a fatal check (`Check failed: …`, `file.cc(123)`) even without symbols.
+            let _ = writeln!(s, "strings near the crash:");
             let mut seen = std::collections::BTreeSet::new();
             let candidates = ctx.regs.iter().copied().chain(
-                stack[..got].chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap_or([0; 8]))),
+                stack[..got].as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)),
             );
             for p in candidates {
                 if p < 0x10000 || !seen.insert(p) {
@@ -192,10 +192,10 @@ mod imp {
                     }
                 }
             }
-            let _ = writeln!(s, "адреса возврата (эвристика, сверху стека):");
+            let _ = writeln!(s, "return addresses (heuristic, top of stack):");
             let mut shown = 0;
-            for (i, chunk) in stack[..got].chunks_exact(8).enumerate() {
-                let v = u64::from_le_bytes(chunk.try_into().unwrap_or([0; 8]));
+            for (i, chunk) in stack[..got].as_chunks::<8>().0.iter().enumerate() {
+                let v = u64::from_le_bytes(*chunk);
                 if mods.iter().any(|m| v >= m.base && v < m.base + m.size) && after_call(process, v) {
                     let _ = writeln!(s, "  [rsp+{:#06x}] {}", i * 8, locate(&mods, v));
                     shown += 1;
@@ -206,10 +206,10 @@ mod imp {
             }
         }
         if !thread.is_null() {
-            // SAFETY: хендл получен выше.
+            // SAFETY: the handle was obtained above.
             unsafe { CloseHandle(thread) };
         }
-        let _ = writeln!(s, "модули:");
+        let _ = writeln!(s, "modules:");
         for m in &mods {
             let _ = writeln!(s, "  {:#014x} {:#010x} {}", m.base, m.size, m.name);
         }
@@ -219,22 +219,22 @@ mod imp {
     pub fn main() -> std::process::ExitCode {
         let args: Vec<String> = std::env::args().collect();
         let (Some(pid), event) = (args.get(1).and_then(|a| a.parse::<u32>().ok()), args.get(2).and_then(|a| a.parse::<usize>().ok())) else {
-            eprintln!("использование: crash-probe.exe <pid> [event]");
+            eprintln!("usage: crash-probe.exe <pid> [event]");
             return std::process::ExitCode::from(2);
         };
-        // SAFETY: обычные вызовы отладочного API с проверкой результата.
+        // SAFETY: ordinary debug API calls with the result checked.
         if unsafe { DebugActiveProcess(pid) } == 0 {
-            eprintln!("crash-probe: DebugActiveProcess({pid}) не удался");
+            eprintln!("crash-probe: DebugActiveProcess({pid}) failed");
             return std::process::ExitCode::from(1);
         }
         if let Some(ev) = event {
-            // SAFETY: хендл события унаследован от Wine (протокол AeDebug).
+            // SAFETY: the event handle is inherited from Wine (AeDebug protocol).
             unsafe { SetEvent(ev as Handle) };
         }
         let process = unsafe { OpenProcess(PROCESS_ALL_ACCESS, 0, pid) };
         let mut ev: DebugEvent = unsafe { std::mem::zeroed() };
         loop {
-            // SAFETY: структура нужного размера.
+            // SAFETY: a structure of the right size.
             if unsafe { WaitForDebugEvent(&mut ev, INFINITE) } == 0 {
                 break;
             }
@@ -245,7 +245,7 @@ mod imp {
                 let first_chance = (ev.u[19] & 0xFFFF_FFFF) as u32;
                 let mods = modules(process);
                 let in_ntdll = locate(&mods, addr).starts_with("ntdll");
-                // Первая точка останова при подключении — из ntdll (DbgBreakPoint), её пропускаем.
+                // The first breakpoint on attach comes from ntdll (DbgBreakPoint) and is skipped.
                 if !(code == 0x8000_0003 && in_ntdll) {
                     let text = report(process, pid, ev.tid, code, addr);
                     print!("{text}");
@@ -253,12 +253,12 @@ mod imp {
                     let _ = std::fs::create_dir_all(dir);
                     let _ = std::fs::write(format!("{dir}\\{pid}-{}.txt", ev.tid), &text);
                     let _ = first_chance;
-                    // SAFETY: процесс всё равно умирает; завершаем, чтобы не висел.
+                    // SAFETY: the process dies anyway; terminate it so it does not hang.
                     unsafe { TerminateProcess(process, code) };
                     status = DBG_EXCEPTION_NOT_HANDLED;
                 }
             }
-            // SAFETY: продолжаем событие, которое только что получили.
+            // SAFETY: continue the event we just received.
             unsafe { ContinueDebugEvent(ev.pid, ev.tid, status) };
             if ev.code == EXIT_PROCESS_DEBUG_EVENT {
                 break;
@@ -275,5 +275,5 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(not(all(windows, target_arch = "x86_64")))]
 fn main() {
-    eprintln!("crash-probe собирается только под Windows x86_64: cargo xtask shim");
+    eprintln!("crash-probe builds only for Windows x86_64: cargo xtask shim");
 }

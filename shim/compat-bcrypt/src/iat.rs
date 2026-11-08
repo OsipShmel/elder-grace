@@ -1,9 +1,9 @@
-//! Подмена записей таблицы импорта (IAT) и патчинг модулей в момент загрузки.
+//! Import address table (IAT) entry replacement and patching modules at load time.
 //!
-//! Общий механизм compat-shim'ов: функция модуля-цели, импортированная из DLL Wine,
-//! направляется в нашу обёртку. Ищем импорт по имени или по ординалу.
-//! Модули, загружаемые позже нас, патчим из `LdrRegisterDllNotification`:
-//! уведомление приходит после разрешения импортов, но до их DllMain.
+//! The common mechanism of the compat shims: a target module's function imported from a Wine DLL
+//! is redirected to our wrapper. Imports are found by name or by ordinal.
+//! Modules loaded after us are patched from `LdrRegisterDllNotification`:
+//! the notification arrives after imports are resolved but before their DllMain.
 
 use std::ffi::{CStr, c_void};
 use std::sync::Mutex;
@@ -18,9 +18,9 @@ pub enum Import {
 
 #[derive(Clone, Copy)]
 pub struct Patch {
-    /// Модуль, чей IAT правим (имя файла, без учёта регистра); `"*"` — все модули.
+    /// Module whose IAT is patched (file name, case-insensitive); `"*"` means every module.
     pub target: &'static str,
-    /// Из какой DLL импорт (без учёта регистра); `None` — из любой.
+    /// DLL the import comes from (case-insensitive); `None` means any.
     pub from: Option<&'static str>,
     pub import: Import,
     pub hook: usize,
@@ -41,14 +41,14 @@ const PAGE_READWRITE: u32 = 0x04;
 
 static PATCHES: Mutex<Vec<Patch>> = Mutex::new(Vec::new());
 
-/// Правит IAT модуля, загруженного по адресу `base`. Возвращает число слотов.
+/// Patches the IAT of the module loaded at `base`. Returns the number of slots.
 ///
 /// # Safety
-/// `base` — адрес загруженного PE-образа x64.
+/// `base` is the address of a loaded x64 PE image.
 pub unsafe fn patch_at(base: usize, p: &Patch) -> usize {
     let mut patched = 0;
-    // SAFETY: разбираем заголовки загруженного образа по формату PE32+;
-    // все смещения берутся из самого образа.
+    // SAFETY: parses the headers of a loaded image per the PE32+ format;
+    // every offset comes from the image itself.
     unsafe {
         let rd32 = |off: usize| std::ptr::read_unaligned((base + off) as *const u32) as usize;
         let nt = rd32(0x3c);
@@ -103,36 +103,36 @@ fn apply_to_loaded(p: &Patch) {
     if p.target == "*" {
         let mut mods = vec![std::ptr::null_mut::<c_void>(); 1024];
         let mut needed = 0u32;
-        // SAFETY: буфер на 1024 хендла, размер в байтах.
+        // SAFETY: a buffer for 1024 handles, size in bytes.
         if unsafe { K32EnumProcessModules(GetCurrentProcess(), mods.as_mut_ptr(), (mods.len() * 8) as u32, &mut needed) } == 0 {
             return;
         }
         for m in mods.iter().take(needed as usize / 8).filter(|m| !m.is_null()) {
-            // SAFETY: хендл модуля = его база.
+            // SAFETY: a module handle is its base.
             let n = unsafe { patch_at(*m as usize, p) };
             if n > 0 {
                 let mut name = [0u8; 260];
-                // SAFETY: буфер на 260 байт.
+                // SAFETY: a 260-byte buffer.
                 let len = unsafe { K32GetModuleBaseNameA(GetCurrentProcess(), *m, name.as_mut_ptr(), 260) } as usize;
-                debug(&format!("{}: {} (слотов {n})", p.label, String::from_utf8_lossy(&name[..len.min(260)])));
+                debug(&format!("{}: {} ({n} slots)", p.label, String::from_utf8_lossy(&name[..len.min(260)])));
             }
         }
         return;
     }
     let wname: Vec<u16> = p.target.encode_utf16().chain(std::iter::once(0)).collect();
-    // SAFETY: имя нуль-терминировано.
+    // SAFETY: the name is null-terminated.
     let base = unsafe { GetModuleHandleW(wname.as_ptr()) } as usize;
     if base != 0 {
-        // SAFETY: GetModuleHandle вернул базу загруженного модуля.
+        // SAFETY: GetModuleHandle returned the base of a loaded module.
         let n = unsafe { patch_at(base, p) };
         if n > 0 {
-            debug(&format!("{}: {} (слотов {n})", p.label, p.target));
+            debug(&format!("{}: {} ({n} slots)", p.label, p.target));
         }
     }
 }
 
-/// Регистрирует подмену: применяется сразу (если модуль уже загружен)
-/// и к каждой будущей загрузке модуля с этим именем.
+/// Registers a patch: applied right away (if the module is already loaded)
+/// and to every future load of a module with that name.
 pub fn register(p: Patch) {
     apply_to_loaded(&p);
     if let Ok(mut list) = PATCHES.lock() {
@@ -162,34 +162,34 @@ unsafe extern "system" fn on_dll(reason: u32, data: *const NotificationData, _ct
     if reason != LDR_DLL_NOTIFICATION_REASON_LOADED || data.is_null() {
         return;
     }
-    // SAFETY: загрузчик передаёт валидную структуру и строку имени.
+    // SAFETY: the loader passes a valid structure and name string.
     let (name, base) = unsafe {
         let d = &*data;
         let s = &*d.base_name;
         let chars = std::slice::from_raw_parts(s.buf, usize::from(s.len) / 2);
         (String::from_utf16_lossy(chars), d.base as usize)
     };
-    // Под loader lock: без загрузки DLL, только правка памяти.
+    // Under the loader lock: no DLL loading, memory edits only.
     let Ok(list) = PATCHES.try_lock() else { return };
     for p in list.iter().filter(|p| p.target == "*" || name.eq_ignore_ascii_case(p.target)) {
-        // SAFETY: base — база только что загруженного модуля.
+        // SAFETY: base is the base of a just-loaded module.
         let n = unsafe { patch_at(base, p) };
         if n > 0 {
-            debug(&format!("{}: {name} при загрузке (слотов {n})", p.label));
+            debug(&format!("{}: {name} on load ({n} slots)", p.label));
         }
     }
 }
 
-/// Включает патчинг модулей при загрузке. Вызывать один раз.
+/// Enables patching modules at load time. Call once.
 pub fn watch_loads() {
     type Register = unsafe extern "system" fn(u32, unsafe extern "system" fn(u32, *const NotificationData, *mut c_void), *mut c_void, *mut *mut c_void) -> i32;
-    // SAFETY: ntdll загружен всегда, имя нуль-терминировано.
+    // SAFETY: ntdll is always loaded, the name is null-terminated.
     let f = unsafe { GetProcAddress(GetModuleHandleA(c"ntdll.dll".as_ptr().cast()), c"LdrRegisterDllNotification".as_ptr().cast()) };
     if f.is_null() {
-        debug("нет LdrRegisterDllNotification — модули, загруженные позже, не будут пропатчены");
+        debug("no LdrRegisterDllNotification: modules loaded later will not be patched");
         return;
     }
-    // SAFETY: сигнатура из winternl/ntddk.
+    // SAFETY: signature from winternl/ntddk.
     let register: Register = unsafe { std::mem::transmute(f) };
     let mut cookie = std::ptr::null_mut();
     let status = unsafe { register(0, on_dll, std::ptr::null_mut(), &mut cookie) };

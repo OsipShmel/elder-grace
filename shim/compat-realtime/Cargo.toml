@@ -1,6 +1,6 @@
 [package]
 name = "compat-realtime"
-description = "Compat-shim для старого Wine: api-ms-win-core-realtime-l1-1-1/2.dll (Query*InterruptTime*, Windows 10+)"
+description = "Compat shim for older Wine: api-ms-win-core-realtime-l1-1-1/2.dll (Query*InterruptTime*, Windows 10+)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

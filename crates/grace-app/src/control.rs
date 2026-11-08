@@ -1,4 +1,4 @@
-//! Сервер управления: Unix-сокет, протокол `grace-proto`.
+//! Control server: Unix socket, `grace-proto` protocol.
 
 use std::io::BufReader;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -18,13 +18,13 @@ pub struct ControlServer {
 impl ControlServer {
     pub fn start(path: &Path, stats: SharedStats) -> Result<Self> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).with_context(|| format!("не создаётся {}", dir.display()))?;
+            std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
         }
-        // Сокет от прошлого запуска мешает bind; живой процесс мы бы не задели,
-        // но второй экземпляр приложения заберёт сокет себе — пока это приемлемо.
+        // A socket left by a previous run blocks bind; a live process would not be affected,
+        // but a second app instance takes the socket over, which is acceptable for now.
         let _ = std::fs::remove_file(path);
         let listener = UnixListener::bind(path).with_context(|| format!("bind {}", path.display()))?;
-        eprintln!("[grace] управление: {}", path.display());
+        eprintln!("[grace] control: {}", path.display());
 
         thread::Builder::new().name("grace-control".into()).spawn(move || {
             for conn in listener.incoming().flatten() {
@@ -57,10 +57,10 @@ fn handle(conn: UnixStream, stats: &SharedStats) {
             },
             Ok(Some(Request::Stats)) => match stats.lock() {
                 Ok(s) => Response::Stats(s.clone()),
-                Err(_) => Response::Error { message: "статистика недоступна".into() },
+                Err(_) => Response::Error { message: "stats unavailable".into() },
             },
-            Ok(Some(Request::Overrides { .. } | Request::Bound { .. } | Request::Camera { .. } | Request::Peek { .. } | Request::FindFloats { .. })) => Response::Error { message: "подмены шейдеров есть только в shim d3d12".into() },
-            Err(e) => Response::Error { message: format!("неверный запрос: {e}") },
+            Ok(Some(Request::Overrides { .. } | Request::Bound { .. } | Request::Camera { .. } | Request::Peek { .. } | Request::FindFloats { .. })) => Response::Error { message: "shader overrides and memory requests exist only in the d3d12 shim".into() },
+            Err(e) => Response::Error { message: format!("bad request: {e}") },
         };
         if write_message(&mut writer, &response).is_err() {
             return;

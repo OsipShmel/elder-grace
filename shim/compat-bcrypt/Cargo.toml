@@ -1,6 +1,6 @@
 [package]
 name = "compat-bcrypt"
-description = "Compat-shim для старого Wine: прокси bcrypt.dll с поддержкой псевдо-хендлов алгоритмов"
+description = "Compat shim for older Wine: bcrypt.dll proxy with algorithm pseudo-handle support"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

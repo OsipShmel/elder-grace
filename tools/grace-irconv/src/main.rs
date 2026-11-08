@@ -1,13 +1,13 @@
-//! `grace-irconv <каталог .dxbc> <каталог вывода>` — DXIL-шейдеры корпуса → `.metallib`.
+//! `grace-irconv <.dxbc dir> <output dir>`: DXIL shaders of a corpus -> `.metallib`.
 //!
-//! Использует Apple Metal Shader Converter (`libmetalirconverter.dylib`), который лежит
-//! внутри D3DMetal в установленном GPTK. Библиотека только x86_64, поэтому инструмент
-//! собирается под `x86_64-apple-darwin` и работает под Rosetta: это офлайн-шаг конвейера,
-//! а результат — обычные `metallib`, которые грузит нативный arm64-рантайм.
-//! Проприетарная библиотека используется локально и никуда не распространяется.
+//! Uses Apple Metal Shader Converter (`libmetalirconverter.dylib`), which lives
+//! inside D3DMetal in an installed GPTK. The library is x86_64 only, so the tool
+//! builds for `x86_64-apple-darwin` and runs under Rosetta: it is an offline pipeline step,
+//! and the output is ordinary `metallib`s that the native arm64 runtime loads.
+//! The proprietary library is used locally and never distributed.
 //!
-//! Шейдеры DXBC SM4/5 этим путём не конвертируются (конвертер понимает только DXIL) —
-//! их переводит вторая ветка `cargo xtask shaders` (vkd3d → SPIR-V → SPIRV-Cross → MSL).
+//! DXBC SM4/5 shaders are not converted this way (the converter understands DXIL only):
+//! the second branch of `cargo xtask shaders` handles them (vkd3d -> SPIR-V -> SPIRV-Cross -> MSL).
 
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::PathBuf;
@@ -26,17 +26,17 @@ unsafe extern "C" {
 
 type Ptr = *mut c_void;
 
-/// Адрес символа → указатель на функцию типа поля `Ir` (тип выводится из поля).
+/// Symbol address -> function pointer of the `Ir` field's type (the type is inferred from the field).
 ///
 /// # Safety
-/// `F` — указатель на функцию с той же сигнатурой, что у символа.
+/// `F` is a function pointer with the same signature as the symbol.
 unsafe fn func<F: Copy>(p: Ptr) -> F {
     assert_eq!(std::mem::size_of::<F>(), std::mem::size_of::<Ptr>());
-    // SAFETY: размеры равны; совместимость сигнатуры — по контракту функции.
+    // SAFETY: sizes are equal; signature compatibility is per the function contract.
     unsafe { std::mem::transmute_copy(&p) }
 }
 
-/// Функции C API Metal Shader Converter, нужные для DXIL → metallib.
+/// Metal Shader Converter C API functions needed for DXIL -> metallib.
 struct Ir {
     compiler_create: unsafe extern "C" fn() -> Ptr,
     compiler_destroy: unsafe extern "C" fn(Ptr),
@@ -56,21 +56,21 @@ struct Ir {
 impl Ir {
     fn load(path: &str) -> Result<Self> {
         let cpath = CString::new(path)?;
-        // SAFETY: dlopen с RTLD_NOW (2); ошибка проверяется.
+        // SAFETY: dlopen with RTLD_NOW (2); the error is checked.
         let h = unsafe { dlopen(cpath.as_ptr(), 2) };
         if h.is_null() {
-            // SAFETY: dlerror возвращает строку C или null.
+            // SAFETY: dlerror returns a C string or null.
             let err = unsafe { dlerror() };
             let msg = if err.is_null() { "?".into() } else { unsafe { CStr::from_ptr(err) }.to_string_lossy().into_owned() };
             bail!("dlopen {path}: {msg}");
         }
         let sym = |name: &str| -> Result<*mut c_void> {
             let c = CString::new(name)?;
-            // SAFETY: хендл получен выше.
+            // SAFETY: the handle was obtained above.
             let p = unsafe { dlsym(h, c.as_ptr()) };
-            if p.is_null() { bail!("нет символа {name}") } else { Ok(p) }
+            if p.is_null() { bail!("no symbol {name}") } else { Ok(p) }
         };
-        // SAFETY: сигнатуры по metal_irconverter.h (Metal Shader Converter).
+        // SAFETY: signatures per metal_irconverter.h (Metal Shader Converter).
         unsafe {
             Ok(Self {
                 compiler_create: func(sym("IRCompilerCreate")?),
@@ -90,13 +90,13 @@ impl Ir {
         }
     }
 
-    /// Один DXIL-контейнер → байты metallib.
+    /// One DXIL container -> metallib bytes.
     fn convert(&self, compiler: Ptr, dxil: &[u8]) -> Result<Vec<u8>, String> {
-        // SAFETY: вызовы C API с проверкой каждого результата; все объекты освобождаются.
+        // SAFETY: C API calls with every result checked; all objects are released.
         unsafe {
             let input = (self.object_from_dxil)(dxil.as_ptr(), dxil.len(), 0); // IRBytecodeOwnershipNone
             if input.is_null() {
-                return Err("IRObjectCreateFromDXIL вернул null".into());
+                return Err("IRObjectCreateFromDXIL returned null".into());
             }
             let mut err: Ptr = std::ptr::null_mut();
             let out = (self.compile_and_link)(compiler, std::ptr::null(), input, &mut err);
@@ -106,7 +106,7 @@ impl Ir {
                 if !err.is_null() {
                     (self.error_destroy)(err);
                 }
-                return Err(format!("компиляция не удалась, код ошибки {code}"));
+                return Err(format!("compilation failed, error code {code}"));
             }
             let stage = (self.object_stage)(out);
             let lib = (self.metallib_create)();
@@ -116,7 +116,7 @@ impl Ir {
                 (self.metallib_bytes)(lib, bytes.as_mut_ptr());
                 Ok(bytes)
             } else {
-                Err(format!("нет metallib для стадии {stage}"))
+                Err(format!("no metallib for stage {stage}"))
             };
             (self.metallib_destroy)(lib);
             (self.object_destroy)(out);
@@ -128,21 +128,21 @@ impl Ir {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (Some(input), Some(output)) = (args.first(), args.get(1)) else {
-        bail!("использование: grace-irconv <каталог .dxbc> <каталог вывода>");
+        bail!("usage: grace-irconv <.dxbc dir> <output dir>");
     };
     let lib = std::env::var("GRACE_IRCONVERTER").unwrap_or_else(|_| DEFAULT_LIB.into());
     let ir = Ir::load(&lib)?;
     let out_dir = PathBuf::from(output);
     std::fs::create_dir_all(&out_dir)?;
 
-    // SAFETY: создание и уничтожение компилятора парные.
+    // SAFETY: compiler creation and destruction are paired.
     let compiler = unsafe { (ir.compiler_create)() };
     if compiler.is_null() {
-        bail!("IRCompilerCreate вернул null");
+        bail!("IRCompilerCreate returned null");
     }
     let (mut ok, mut failed, mut dxbc) = (0, 0, 0);
     let mut files: Vec<PathBuf> = std::fs::read_dir(input)
-        .with_context(|| format!("чтение {input}"))?
+        .with_context(|| format!("reading {input}"))?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("dxbc"))
         .collect();
@@ -166,8 +166,8 @@ fn main() -> Result<()> {
             }
         }
     }
-    // SAFETY: компилятор создан выше.
+    // SAFETY: the compiler was created above.
     unsafe { (ir.compiler_destroy)(compiler) };
-    println!("DXIL → metallib: успешно {ok}, ошибок {failed}; DXBC SM4/5 пропущено {dxbc} (их переводит ветка vkd3d → SPIRV-Cross)");
+    println!("DXIL → metallib: {ok} ok, {failed} failed; DXBC SM4/5 skipped {dxbc} (the vkd3d -> SPIRV-Cross branch handles them)");
     Ok(())
 }

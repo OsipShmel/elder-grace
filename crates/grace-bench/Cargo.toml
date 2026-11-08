@@ -1,6 +1,6 @@
 [package]
 name = "grace-bench"
-description = "Отчёты по времени кадра: журнал shim dxgi → FPS, процентили, 1% low, статтеры, сравнение прогонов"
+description = "Frame-time reports: dxgi shim log -> FPS, percentiles, 1% low, stutters, run comparison"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,23 +1,23 @@
-//! Шейдерный конвейер Elder Grace.
+//! Elder Grace shader pipeline.
 //!
-//! Сейчас: разбор контейнера DXBC (в нём живут и DXBC SM4/5, и DXIL SM6) и сводка
-//! по корпусу шейдеров, который снимает shim `d3d12.dll` в `.local/shaders/<игра>/`.
-//! Дальше: трансляция в MSL и сборка `metallib`.
+//! Now: DXBC container parsing (it holds both DXBC SM4/5 and DXIL SM6) and a summary
+//! of the shader corpus that the `d3d12.dll` shim dumps into `.local/shaders/<game>/`.
+//! Next: translation to MSL and `metallib` builds.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ContainerError {
-    #[error("слишком короткий файл ({0} байт)")]
+    #[error("file too short ({0} bytes)")]
     TooShort(usize),
-    #[error("нет сигнатуры DXBC")]
+    #[error("no DXBC signature")]
     BadMagic,
-    #[error("чанк {index} выходит за пределы файла")]
+    #[error("chunk {index} goes past the end of the file")]
     ChunkOutOfBounds { index: usize },
 }
 
-/// Вид программы из токена версии (`D3D10_SB_TOKENIZED_PROGRAM_TYPE` / DXIL program kind).
+/// Program kind from the version token (`D3D10_SB_TOKENIZED_PROGRAM_TYPE` / DXIL program kind).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Stage {
     Pixel,
@@ -55,12 +55,12 @@ impl Stage {
     }
 }
 
-/// Формат байткода внутри контейнера.
+/// Bytecode format inside the container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Bytecode {
-    /// DXBC SM4/5: чанк `SHDR` или `SHEX`.
+    /// DXBC SM4/5: `SHDR` or `SHEX` chunk.
     Dxbc,
-    /// DXIL SM6: чанк `DXIL`.
+    /// DXIL SM6: `DXIL` chunk.
     Dxil,
 }
 
@@ -75,7 +75,7 @@ pub struct ShaderInfo {
     pub bytecode: Bytecode,
     pub stage: Stage,
     pub model: (u8, u8),
-    /// Длина программы в 32-битных токенах (для DXBC) или в байтах битового кода (для DXIL).
+    /// Program length in 32-bit tokens (DXBC) or in bitcode bytes (DXIL).
     pub program_len: usize,
     pub inputs: usize,
     pub outputs: usize,
@@ -87,8 +87,8 @@ fn u32_at(b: &[u8], off: usize) -> Option<u32> {
     b.get(off..off + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
-/// Разбирает контейнер DXBC: заголовок (magic, 16 байт хеша, версия, размер, число чанков)
-/// и таблицу смещений чанков.
+/// Parses a DXBC container: header (magic, 16-byte hash, version, size, chunk count)
+/// and the chunk offset table.
 pub fn chunks(data: &[u8]) -> Result<Vec<Chunk<'_>>, ContainerError> {
     if data.len() < 32 {
         return Err(ContainerError::TooShort(data.len()));
@@ -107,7 +107,7 @@ pub fn chunks(data: &[u8]) -> Result<Vec<Chunk<'_>>, ContainerError> {
     Ok(out)
 }
 
-/// Элемент сигнатуры входов/выходов (ISGN/OSGN, по 24 байта).
+/// Input/output signature element (ISGN/OSGN, 24 bytes each).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignatureElement {
     pub semantic: String,
@@ -118,7 +118,7 @@ pub struct SignatureElement {
     pub mask: u8,
 }
 
-/// Разбор чанка ISGN/OSGN: [count, 8, элементы по 24 байта], имена — смещения от начала чанка.
+/// Parses an ISGN/OSGN chunk: [count, 8, 24-byte elements]; names are offsets from the chunk start.
 pub fn signature(chunk: &Chunk<'_>) -> Vec<SignatureElement> {
     let d = chunk.data;
     let count = u32_at(d, 0).unwrap_or(0) as usize;
@@ -139,9 +139,9 @@ pub fn signature(chunk: &Chunk<'_>) -> Vec<SignatureElement> {
         .collect()
 }
 
-/// Разбор чанка ISG1/OSG1 (DXIL): [count, 8, элементы по 32 байта]:
-/// stream, имя (смещение от начала чанка), индекс, system value, тип компонента,
-/// регистр, маска, маска чтения/записи, 2 байта выравнивания, min precision.
+/// Parses an ISG1/OSG1 chunk (DXIL): [count, 8, 32-byte elements]:
+/// stream, name (offset from the chunk start), index, system value, component type,
+/// register, mask, read/write mask, 2 padding bytes, min precision.
 pub fn signature1(chunk: &Chunk<'_>) -> Vec<SignatureElement> {
     let d = chunk.data;
     let count = u32_at(d, 0).unwrap_or(0) as usize;
@@ -162,7 +162,7 @@ pub fn signature1(chunk: &Chunk<'_>) -> Vec<SignatureElement> {
         .collect()
 }
 
-/// Сигнатуры входов и выходов контейнера (ISGN/OSGN у DXBC, ISG1/OSG1 у DXIL).
+/// Input and output signatures of a container (ISGN/OSGN for DXBC, ISG1/OSG1 for DXIL).
 pub fn signatures(data: &[u8]) -> Result<(Vec<SignatureElement>, Vec<SignatureElement>), ContainerError> {
     let (mut inputs, mut outputs) = (Vec::new(), Vec::new());
     for c in chunks(data)? {
@@ -177,8 +177,8 @@ pub fn signatures(data: &[u8]) -> Result<(Vec<SignatureElement>, Vec<SignatureEl
     Ok((inputs, outputs))
 }
 
-/// Отладочное имя шейдера из чанка ILDN (DXIL): { u16 флаги, u16 длина, имя\0 }.
-/// У игр собранных с PDB это путь исходника — по нему шейдеры ищутся по смыслу.
+/// Shader debug name from the ILDN chunk (DXIL): { u16 flags, u16 length, name\0 }.
+/// For games built with PDBs this is the source path, which lets you search shaders by meaning.
 pub fn debug_name(data: &[u8]) -> Option<String> {
     let c = chunks(data).ok()?.into_iter().find(|c| &c.fourcc == b"ILDN")?;
     let len = u16::from_le_bytes([*c.data.get(2)?, *c.data.get(3)?]) as usize;
@@ -186,13 +186,13 @@ pub fn debug_name(data: &[u8]) -> Option<String> {
     Some(String::from_utf8_lossy(name).into_owned())
 }
 
-/// Краткое имя из отладочного пути: файл без каталога и расширений `.ppo.pdb`/`.pdb`.
+/// Short name from a debug path: the file without directory and without `.ppo.pdb`/`.pdb`.
 pub fn short_name(debug: &str) -> &str {
     let file = debug.rsplit(['\\', '/']).next().unwrap_or(debug);
     file.split('.').next().unwrap_or(file)
 }
 
-/// Число элементов в сигнатуре ISGN/OSGN/ISG1/OSG1 (первое поле чанка).
+/// Element count of an ISGN/OSGN/ISG1/OSG1 signature (first field of the chunk).
 fn signature_len(chunk: &Chunk<'_>) -> usize {
     u32_at(chunk.data, 0).unwrap_or(0) as usize
 }
@@ -236,16 +236,16 @@ pub fn inspect(data: &[u8]) -> Result<Option<ShaderInfo>, ContainerError> {
     }))
 }
 
-/// Ключ сводки: формат, стадия, модель шейдера.
+/// Summary key: format, stage, shader model.
 pub type StageKey = (Bytecode, Stage, (u8, u8));
 
-/// Сводка по каталогу корпуса (`*.dxbc`).
+/// Summary of a corpus directory (`*.dxbc`).
 #[derive(Debug, Default)]
 pub struct Inventory {
     pub files: usize,
     pub bytes: u64,
     pub broken: usize,
-    /// Ключ → (файлов, суммарная длина программ).
+    /// Key -> (files, total program length).
     pub by_stage: BTreeMap<StageKey, (usize, usize)>,
     pub largest: Option<(String, usize)>,
 }
@@ -280,24 +280,24 @@ pub fn inventory(dir: &Path) -> std::io::Result<Inventory> {
 mod tests {
     use super::*;
 
-    /// Минимальный синтетический контейнер: один чанк SHEX с токеном ps_5_0 и длиной 2.
+    /// Minimal synthetic container: one SHEX chunk with a ps_5_0 token and length 2.
     fn tiny_ps50() -> Vec<u8> {
         let mut d = Vec::new();
         d.extend_from_slice(b"DXBC");
-        d.extend_from_slice(&[0u8; 16]); // хеш
-        d.extend_from_slice(&1u32.to_le_bytes()); // версия контейнера
+        d.extend_from_slice(&[0u8; 16]); // hash
+        d.extend_from_slice(&1u32.to_le_bytes()); // container version
         let total = 32 + 4 + 8 + 8;
         d.extend_from_slice(&(total as u32).to_le_bytes());
-        d.extend_from_slice(&1u32.to_le_bytes()); // один чанк
-        d.extend_from_slice(&36u32.to_le_bytes()); // смещение чанка
+        d.extend_from_slice(&1u32.to_le_bytes()); // one chunk
+        d.extend_from_slice(&36u32.to_le_bytes()); // chunk offset
         d.extend_from_slice(b"SHEX");
         d.extend_from_slice(&8u32.to_le_bytes());
-        d.extend_from_slice(&0x0000_0050u32.to_le_bytes()); // ps (тип 0), 5.0
-        d.extend_from_slice(&2u32.to_le_bytes()); // длина программы в токенах
+        d.extend_from_slice(&0x0000_0050u32.to_le_bytes()); // ps (type 0), 5.0
+        d.extend_from_slice(&2u32.to_le_bytes()); // program length in tokens
         d
     }
 
-    /// Контейнер из одного чанка.
+    /// Container with a single chunk.
     fn container(fourcc: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let mut d = Vec::new();
         d.extend_from_slice(b"DXBC");
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn parses_dxil_signature_and_debug_name() {
-        // ISG1: один элемент TEXCOORD5, регистр 5, маска xyzw, float (3).
+        // ISG1: one element TEXCOORD5, register 5, mask xyzw, float (3).
         let mut b = Vec::new();
         for v in [1u32, 8, 0, 40, 5, 0, 3, 5] {
             b.extend_from_slice(&v.to_le_bytes());
@@ -322,7 +322,7 @@ mod tests {
         b.extend_from_slice(&[0x0f, 0x0f, 0, 0]);
         b.extend_from_slice(&0u32.to_le_bytes());
         b.extend_from_slice(b"TEXCOORD\0");
-        let (inputs, outputs) = signatures(&container(b"ISG1", &b)).expect("разбор");
+        let (inputs, outputs) = signatures(&container(b"ISG1", &b)).expect("parse");
         assert!(outputs.is_empty());
         assert_eq!(
             inputs,
@@ -334,14 +334,14 @@ mod tests {
         n.extend_from_slice(&(path.len() as u16).to_le_bytes());
         n.extend_from_slice(path);
         n.push(0);
-        let name = debug_name(&container(b"ILDN", &n)).expect("имя");
+        let name = debug_name(&container(b"ILDN", &n)).expect("name");
         assert_eq!(name, "N:\\GR\\shader\\M_Skin_Velo.ppo.pdb");
         assert_eq!(short_name(&name), "M_Skin_Velo");
     }
 
     #[test]
     fn parses_dxbc_container() {
-        let info = inspect(&tiny_ps50()).expect("разбор").expect("есть программа");
+        let info = inspect(&tiny_ps50()).expect("parse").expect("has a program");
         assert_eq!(info.bytecode, Bytecode::Dxbc);
         assert_eq!(info.stage, Stage::Pixel);
         assert_eq!(info.model, (5, 0));
@@ -355,14 +355,14 @@ mod tests {
         assert!(matches!(inspect(b"DXBC"), Err(ContainerError::TooShort(4))));
     }
 
-    /// Реальный корпус, если он снят (данных игры в git нет — иначе тест пропускается).
+    /// Real corpora, if dumped (game data is not in git, otherwise the test is skipped).
     #[test]
     fn real_corpus_if_present() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.local/shaders/eldenring");
-        let Ok(inv) = inventory(&dir) else { return };
-        if inv.files == 0 {
-            return;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.local/shaders");
+        let Ok(games) = std::fs::read_dir(&root) else { return };
+        for game in games.flatten() {
+            let Ok(inv) = inventory(&game.path()) else { continue };
+            assert_eq!(inv.broken, 0, "every corpus file must parse: {}", game.path().display());
         }
-        assert_eq!(inv.broken, 0, "все файлы корпуса должны разбираться");
     }
 }

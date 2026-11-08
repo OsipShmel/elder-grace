@@ -1,9 +1,9 @@
-//! Grace.app — оболочка macOS и нативный рантайм Elder Grace.
+//! Grace.app: Elder Grace macOS shell and native runtime.
 //!
-//! Фаза 0: окно, Metal, тестовый треугольник, сервер управления.
-//! Флаги:
-//! - `--exit-after <сек>` — выйти сам (для автоматических проверок);
-//! - `--capture <out.png> [--size WxH]` — отрисовать один кадр в файл без окна.
+//! Phase 0: window, Metal, test triangle, control server.
+//! Flags:
+//! - `--exit-after <sec>`: quit by itself (for automated checks);
+//! - `--capture <out.png> [--size WxH]`: render one frame to a file without a window.
 
 mod control;
 mod render;
@@ -26,7 +26,7 @@ use control::{ControlServer, SharedStats};
 use render::{Gpu, Renderer};
 
 struct Running {
-    // Порядок полей важен: рендер держит слой на view окна и должен умереть раньше окна.
+    // Field order matters: the renderer holds a layer on the window's view and must die before the window.
     renderer: Renderer,
     window: Window,
     frames: u64,
@@ -48,14 +48,14 @@ impl App {
         let attrs = Window::default_attributes()
             .with_title("Elder Grace")
             .with_inner_size(LogicalSize::new(1280.0, 800.0));
-        let window = event_loop.create_window(attrs).context("не создаётся окно")?;
+        let window = event_loop.create_window(attrs).context("cannot create window")?;
 
-        let handle = window.window_handle().context("нет handle окна")?.as_raw();
+        let handle = window.window_handle().context("no window handle")?.as_raw();
         let RawWindowHandle::AppKit(appkit) = handle else {
-            bail!("ожидался AppKit-handle, получен {handle:?}");
+            bail!("expected an AppKit handle, got {handle:?}");
         };
-        // SAFETY: winit гарантирует, что ns_view — живой NSView, пока живо окно,
-        // а окно живёт дольше рендера (см. порядок полей Running).
+        // SAFETY: winit guarantees ns_view is a live NSView while the window lives,
+        // and the window outlives the renderer (see the field order of Running).
         let view: &NSView = unsafe { appkit.ns_view.cast().as_ref() };
 
         let size = window.inner_size();
@@ -103,7 +103,7 @@ impl ApplicationHandler for App {
                 event: KeyEvent { logical_key: Key::Character(ref c), state: ElementState::Pressed, repeat: false, .. },
                 ..
             } if c.eq_ignore_ascii_case("f") && self.modifiers.super_key() && self.modifiers.control_key() => {
-                // Ctrl+Cmd+F — стандартное для macOS переключение полноэкранного режима.
+                // Ctrl+Cmd+F: the standard macOS full-screen toggle.
                 let next = match run.window.fullscreen() {
                     Some(_) => None,
                     None => Some(Fullscreen::Borderless(None)),
@@ -152,17 +152,17 @@ struct Args {
 fn parse_args() -> Result<Args> {
     let mut out = Args { size: (1920, 1080), ..Args::default() };
     let mut args = std::env::args().skip(1);
-    // Finder может передать -psn_…; всё незнакомое игнорируем.
+    // Finder may pass -psn_…; anything unknown is ignored.
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--exit-after" => {
-                let secs: f64 = args.next().context("--exit-after требует число секунд")?.parse()?;
+                let secs: f64 = args.next().context("--exit-after needs a number of seconds")?.parse()?;
                 out.exit_after = Some(Duration::from_secs_f64(secs));
             }
-            "--capture" => out.capture = Some(args.next().context("--capture требует путь к PNG")?.into()),
+            "--capture" => out.capture = Some(args.next().context("--capture needs a PNG path")?.into()),
             "--size" => {
-                let v = args.next().context("--size требует WxH")?;
-                let (w, h) = v.split_once('x').context("--size в формате WxH")?;
+                let v = args.next().context("--size needs WxH")?;
+                let (w, h) = v.split_once('x').context("--size must be WxH")?;
                 out.size = (w.parse()?, h.parse()?);
             }
             _ => {}
@@ -176,7 +176,7 @@ fn main() -> Result<()> {
     if let Some(out) = &args.capture {
         let gpu = Gpu::new()?;
         gpu.capture_png(args.size.0, args.size.1, 0.0, out)?;
-        eprintln!("[grace] кадр {}×{} ({}) → {}", args.size.0, args.size.1, gpu.device_name(), out.display());
+        eprintln!("[grace] frame {}x{} ({}) -> {}", args.size.0, args.size.1, gpu.device_name(), out.display());
         return Ok(());
     }
     let exit_after = args.exit_after;
@@ -204,7 +204,7 @@ fn main() -> Result<()> {
         return Err(e);
     }
     if let Ok(s) = stats.lock() {
-        eprintln!("[grace] выход: кадров {}, последние {:.1} FPS", s.frames, s.fps);
+        eprintln!("[grace] exit: {} frames, last {:.1} FPS", s.frames, s.fps);
     }
     Ok(())
 }

@@ -1,6 +1,6 @@
 [package]
 name = "crash-probe"
-description = "AeDebug-отладчик для Wine: снимает отчёт о падении (регистры, стек, модули с оффсетами)"
+description = "AeDebug debugger for Wine: writes a crash report (registers, stack, modules with offsets)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

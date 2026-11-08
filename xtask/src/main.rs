@@ -1,14 +1,16 @@
-//! `cargo xtask bundle [--debug]` — собрать `target/Grace.app`.
-//! `cargo xtask shim [--release]` — собрать shim под Windows x86_64.
-//! `cargo xtask oracle …` — среда эталона на GPTK (см. oracle.rs).
-//! `cargo xtask shaders [игра]` — корпус шейдеров: сводка → DXIL→metallib → проверка в Metal.
-//! `cargo xtask overrides [игра] [--reload]` — собрать подмены шейдеров из `../grace-<игра>/shaders/overrides/`
-//!   (`.hlsl` — замена, `.irpatch` — правка оригинального DXIL; см. overrides.rs);
-//!   `--reload` — сразу перезагрузить их в запущенной игре (shim d3d12, TCP 47322).
-//! `cargo xtask shader <хеш>.<стадия> [--ir]` — имя, сигнатуры, ресурсы шейдера из дампа; `--ir` — дизассемблер в `.local`.
-//! `cargo xtask bench <журнал|метка> [<журнал2|метка2>] [--skip сек] [--game игра]` — отчёт по времени кадра.
-//! `cargo xtask trace [--seconds N] [--label L] [--game игра] [--template T] [--instrument I]…` — трейс запущенной игры;
-//!   по умолчанию Metal System Trace + вердикт CPU/GPU; `--template "System Trace"` — состояния потоков (ожидания).
+//! `cargo xtask bundle [--debug]`: build `target/Grace.app`.
+//! `cargo xtask shim [--release]`: build the shims for Windows x86_64.
+//! `cargo xtask oracle …`: the GPTK oracle environment (see oracle.rs).
+//! `cargo xtask shaders [game]`: shader corpus: summary -> DXIL->metallib -> check in Metal.
+//! `cargo xtask overrides [game] [--reload]`: build shader overrides from `../grace-<game>/shaders/overrides/`
+//!   (`.hlsl` is a replacement, `.irpatch` a patch of the original DXIL; see overrides.rs);
+//!   `--reload` reloads them in the running game right away (d3d12 shim, TCP 47322).
+//! `cargo xtask shader <hash>.<stage> [--ir]`: name, signatures, resources of a dumped shader; `--ir` disassembles into `.local`.
+//! `cargo xtask bench <log|label> [<log2|label2>] [--skip sec] [--game game]`: frame-time report.
+//! `cargo xtask trace [--seconds N] [--label L] [--game game] [--template T] [--instrument I]…`: trace the running game;
+//!   Metal System Trace + CPU/GPU verdict by default; `--template "System Trace"` shows thread states (waits).
+//!
+//! `game` defaults to `GRACE_GAME`, or to the only `[games.*]` entry in `config/local.toml`.
 
 mod oracle;
 mod overrides;
@@ -25,37 +27,51 @@ fn main() -> Result<()> {
         Some("bundle") => bundle(!flag("--debug")),
         Some("shim") => shim(flag("--release")),
         Some("oracle") => oracle::main(&args[1..]),
-        Some("shaders") => shaders(args.get(1).map_or("eldenring", String::as_str)),
+        Some("shaders") => shaders(&args.get(1).cloned().map_or_else(default_game, Ok)?),
         Some("overrides") => {
-            let game = args.get(1).filter(|a| !a.starts_with("--")).map_or("eldenring", String::as_str);
-            overrides::build(&project_dir()?, game)?;
+            let game = args.get(1).filter(|a| !a.starts_with("--")).cloned().map_or_else(default_game, Ok)?;
+            overrides::build(&project_dir()?, &game)?;
             if flag("--reload") { reload_overrides() } else { Ok(()) }
         }
         Some("shader") => {
-            let id = args.get(1).filter(|a| !a.starts_with("--")).context("использование: cargo xtask shader <хеш>.<стадия> [--ir] [--game игра]")?;
-            let game = args.iter().position(|a| a == "--game").and_then(|i| args.get(i + 1)).map_or("eldenring", String::as_str);
-            overrides::show(&project_dir()?, game, id, flag("--ir"))
+            let id = args.get(1).filter(|a| !a.starts_with("--")).context("usage: cargo xtask shader <hash>.<stage> [--ir] [--game game]")?;
+            let game = args.iter().position(|a| a == "--game").and_then(|i| args.get(i + 1)).cloned().map_or_else(default_game, Ok)?;
+            overrides::show(&project_dir()?, &game, id, flag("--ir"))
         }
         Some("bench") => bench(&args[1..]),
         Some("trace") => trace(&args[1..]),
-        _ => bail!("использование: cargo xtask bundle [--debug] | shim [--release] | oracle …"),
+        _ => bail!("usage: cargo xtask bundle [--debug] | shim [--release] | oracle … | shaders | overrides | shader | bench | trace"),
     }
 }
 
 fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask лежит в корне workspace").to_owned()
+    Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask lives in the workspace root").to_owned()
 }
 
-/// Общая папка проекта (`ProjectPort/`): рядом лежат репозитории игр и `.local/`.
+/// Shared project folder (`ProjectPort/`): game repositories and `.local/` live next to the engine.
 fn project_dir() -> Result<PathBuf> {
-    Ok(root().parent().context("корень ProjectPort")?.to_owned())
+    Ok(root().parent().context("project folder above the engine checkout")?.to_owned())
+}
+
+/// Game to work with when none is given: `GRACE_GAME`, else the only `[games.*]` entry of the local config.
+pub(crate) fn default_game() -> Result<String> {
+    if let Ok(game) = std::env::var("GRACE_GAME") {
+        return Ok(game);
+    }
+    let cfg = grace_core::config::LocalConfig::discover(&root())?;
+    let mut games = cfg.games.keys();
+    match (games.next(), games.next()) {
+        (Some(game), None) => Ok(game.clone()),
+        (None, _) => bail!("config/local.toml has no [games.*] entries"),
+        _ => bail!("several games in config/local.toml: pass the game explicitly or set GRACE_GAME"),
+    }
 }
 
 fn cargo(args: &[&str]) -> Result<()> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let status = Command::new(cargo).args(args).current_dir(root()).status()?;
     if !status.success() {
-        bail!("cargo {} завершился с ошибкой", args.join(" "));
+        bail!("cargo {} failed", args.join(" "));
     }
     Ok(())
 }
@@ -75,13 +91,13 @@ fn bundle(release: bool) -> Result<()> {
         std::fs::remove_dir_all(&app)?;
     }
     std::fs::create_dir_all(&macos)?;
-    std::fs::copy(target.join(profile).join("grace-app"), macos.join("grace-app")).context("копирование бинарника")?;
+    std::fs::copy(target.join(profile).join("grace-app"), macos.join("grace-app")).context("copying the binary")?;
     std::fs::write(app.join("Contents/Info.plist"), info_plist())?;
 
-    // Ad-hoc подпись: без неё macOS на Apple Silicon не запустит собранный бандл.
+    // Ad-hoc signature: without it macOS on Apple Silicon will not launch the built bundle.
     let status = Command::new("codesign").args(["--force", "--sign", "-"]).arg(&app).status()?;
     if !status.success() {
-        bail!("codesign не прошёл");
+        bail!("codesign failed");
     }
     println!("{}", app.display());
     Ok(())
@@ -123,12 +139,12 @@ pub(crate) fn shim(release: bool) -> Result<()> {
     Ok(())
 }
 
-/// Конвейер шейдеров по корпусу, снятому shim'ом d3d12 в `.local/shaders/<игра>/`.
-/// DXIL → metallib: Metal Shader Converter (grace-irconv, под Rosetta).
+/// Shader pipeline over the corpus that the d3d12 shim dumps into `.local/shaders/<game>/`.
+/// DXIL -> metallib: Metal Shader Converter (grace-irconv, under Rosetta).
 /// DXBC SM4/5 → SPIR-V (vkd3d-compiler) → MSL (SPIRV-Cross) → metallib (xcrun metal).
-/// Все metallib складываются в `.local/shaders/<игра>-metal/` и проверяются в Metal нативно.
+/// All metallibs go into `.local/shaders/<game>-metal/` and are checked in Metal natively.
 fn shaders(game: &str) -> Result<()> {
-    let local = root().parent().context("корень ProjectPort")?.join(".local");
+    let local = project_dir()?.join(".local");
     let corpus = local.join("shaders").join(game);
     let metal = local.join("shaders").join(format!("{game}-metal"));
     let work = local.join("shaders").join(format!("{game}-msl"));
@@ -136,20 +152,20 @@ fn shaders(game: &str) -> Result<()> {
     std::fs::create_dir_all(&work)?;
     let (corpus_s, metal_s) = (corpus.to_string_lossy().into_owned(), metal.to_string_lossy().into_owned());
 
-    println!("== сводка корпуса");
+    println!("== corpus summary");
     cargo(&["run", "-q", "--release", "-p", "grace-shader", "--", "inventory", &corpus_s])?;
 
-    println!("== DXIL → metallib (Metal Shader Converter из GPTK, под Rosetta)");
+    println!("== DXIL → metallib (Metal Shader Converter from GPTK, under Rosetta)");
     cargo(&["build", "-q", "--release", "-p", "grace-irconv", "--target", "x86_64-apple-darwin"])?;
     let status = Command::new(root().join("target/x86_64-apple-darwin/release/grace-irconv")).args([&corpus_s, &metal_s]).status()?;
     if !status.success() {
-        bail!("grace-irconv завершился с ошибкой");
+        bail!("grace-irconv failed");
     }
 
     println!("== DXBC → SPIR-V → MSL → metallib (vkd3d + SPIRV-Cross + xcrun metal)");
     let vkd3d = local.join("tools/bin/vkd3d-compiler");
     if !vkd3d.exists() {
-        bail!("нет {} — сборка vkd3d описана в docs/ARCHITECTURE.md (шейдерный конвейер)", vkd3d.display());
+        bail!("{} is missing: building vkd3d is described in docs/ARCHITECTURE.md (shader pipeline)", vkd3d.display());
     }
     let (mut ok, mut failed) = (0, 0);
     let mut files: Vec<_> = std::fs::read_dir(&corpus)?.filter_map(|e| e.ok().map(|e| e.path())).collect();
@@ -182,43 +198,43 @@ fn shaders(game: &str) -> Result<()> {
             };
             let res = Command::new(&program).args(&args).output()?;
             if !res.status.success() {
-                eprintln!("{stem}: {tool}: {}", String::from_utf8_lossy(&res.stderr).lines().next().unwrap_or("ошибка"));
+                eprintln!("{stem}: {tool}: {}", String::from_utf8_lossy(&res.stderr).lines().next().unwrap_or("error"));
                 good = false;
                 break;
             }
         }
         if good { ok += 1 } else { failed += 1 }
     }
-    println!("DXBC → metallib: успешно {ok}, ошибок {failed}");
+    println!("DXBC → metallib: {ok} ok, {failed} failed");
 
-    println!("== проверка в Metal (нативно)");
+    println!("== check in Metal (native)");
     cargo(&["run", "-q", "--release", "-p", "grace-shader", "--", "metallib", &metal_s])
 }
 
-/// Перезагрузка подмен в запущенной игре через канал управления shim d3d12.
+/// Reloads overrides in the running game through the d3d12 shim control channel.
 fn reload_overrides() -> Result<()> {
     use std::io::BufReader;
     let addr = "127.0.0.1:47322";
-    let stream = std::net::TcpStream::connect(addr).with_context(|| format!("нет соединения с {addr} — игра с shim запущена?"))?;
+    let stream = std::net::TcpStream::connect(addr).with_context(|| format!("cannot connect to {addr}: is the game running with the shim?"))?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
     let mut w = stream.try_clone()?;
     grace_proto::write_message(&mut w, &grace_proto::Request::Overrides { op: grace_proto::OverrideOp::Reload })?;
     match grace_proto::read_message::<_, grace_proto::Response>(&mut BufReader::new(stream))? {
         Some(grace_proto::Response::Overrides(o)) => {
             println!("{}", o.last_reload);
-            println!("подмены {} · пар PSO {}", if o.enabled { "ВКЛ" } else { "выкл" }, o.pairs);
+            println!("overrides {} · PSO pairs {}", if o.enabled { "ON" } else { "off" }, o.pairs);
             Ok(())
         }
         Some(grace_proto::Response::Error { message }) => bail!("shim: {message}"),
-        other => bail!("неожиданный ответ shim: {other:?}"),
+        other => bail!("unexpected shim reply: {other:?}"),
     }
 }
 
-/// Отчёт по журналам кадров. Аргумент — путь к CSV или метка прогона
-/// (`.local/frametimes/<игра>/<метка>.csv`, игра по умолчанию eldenring).
+/// Report over frame logs. The argument is a CSV path or a run label
+/// (`.local/frametimes/<game>/<label>.csv`).
 fn bench(args: &[String]) -> Result<()> {
-    let game = args.iter().position(|a| a == "--game").and_then(|i| args.get(i + 1)).map_or("eldenring", String::as_str);
-    let dir = root().parent().context("корень ProjectPort")?.join(".local/frametimes").join(game);
+    let game = args.iter().position(|a| a == "--game").and_then(|i| args.get(i + 1)).cloned().map_or_else(default_game, Ok)?;
+    let dir = project_dir()?.join(".local/frametimes").join(game);
     let mut pass: Vec<String> = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -244,36 +260,36 @@ fn bench(args: &[String]) -> Result<()> {
     cargo(&cmd.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
-/// Metal System Trace запущенной под эталоном игры и разбор: CPU- или GPU-bound.
+/// Metal System Trace of the game running under the oracle, with analysis: CPU- or GPU-bound.
 fn trace(args: &[String]) -> Result<()> {
     let opt = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
-    let game = opt("--game").unwrap_or_else(|| "eldenring".into());
+    let game = opt("--game").map_or_else(default_game, Ok)?;
     let seconds = opt("--seconds").unwrap_or_else(|| "15".into());
     let label = opt("--label").unwrap_or_else(|| {
         let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         format!("trace-{secs}")
     });
-    let project = root().parent().context("корень ProjectPort")?.to_owned();
+    let project = project_dir()?;
     let cfg = grace_core::config::LocalConfig::discover(&root())?;
-    let exe = cfg.games.get(&game).and_then(|g| g.exe.clone()).with_context(|| format!("в [games.{game}] нет exe"))?;
+    let exe = cfg.games.get(&game).and_then(|g| g.exe.clone()).with_context(|| format!("[games.{game}] has no exe"))?;
 
-    // Процесс игры под Wine: wine64-preloader с именем exe в командной строке.
+    // The game process under Wine: wine64-preloader with the exe name on its command line.
     let ps = Command::new("ps").args(["-axo", "pid=,command="]).output()?;
     let pid = String::from_utf8_lossy(&ps.stdout)
         .lines()
         .find(|l| l.contains("wine64-preloader") && l.contains(exe.as_str()))
         .and_then(|l| l.split_whitespace().next().map(str::to_owned))
-        .with_context(|| format!("{exe} не запущен — cargo xtask oracle run"))?;
+        .with_context(|| format!("{exe} is not running: cargo xtask oracle run"))?;
 
     let dir = project.join(".local/traces").join(&game);
     std::fs::create_dir_all(&dir)?;
     let out = dir.join(format!("{label}.trace"));
     if out.exists() {
-        bail!("{} уже есть — задай другую --label", out.display());
+        bail!("{} already exists: pick another --label", out.display());
     }
     let template = opt("--template").unwrap_or_else(|| "Metal System Trace".into());
     let instruments: Vec<&String> = args.iter().enumerate().filter(|(_, a)| *a == "--instrument").filter_map(|(i, _)| args.get(i + 1)).collect();
-    println!("запись «{template}»: {exe} (pid {pid}), {seconds} с → {}", out.display());
+    println!("recording \"{template}\": {exe} (pid {pid}), {seconds} s -> {}", out.display());
     let mut cmd = Command::new("xcrun");
     cmd.args(["xctrace", "record", "--template", &template, "--attach", &pid, "--time-limit", &format!("{seconds}s", seconds = seconds.trim_end_matches('s'))]);
     for i in &instruments {
@@ -281,10 +297,10 @@ fn trace(args: &[String]) -> Result<()> {
     }
     let status = cmd.arg("--output").arg(&out).stdout(std::process::Stdio::null()).status()?;
     if !status.success() {
-        bail!("xctrace record завершился с ошибкой");
+        bail!("xctrace record failed");
     }
     if template != "Metal System Trace" {
-        println!("трейс записан; разбор вердикта — только для Metal System Trace (таблицы: xcrun xctrace export --input {} --toc)", out.display());
+        println!("trace recorded; the verdict is computed only for Metal System Trace (tables: xcrun xctrace export --input {} --toc)", out.display());
         return Ok(());
     }
     let out_s = out.to_string_lossy().into_owned();

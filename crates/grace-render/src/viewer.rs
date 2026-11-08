@@ -1,5 +1,5 @@
-//! Окно просмотра: CAMetalLayer, орбитальная камера мышью, колесо — масштаб,
-//! WASD/QE — полёт (Shift — быстрее), Esc/Cmd+Q — выход.
+//! Viewer window: CAMetalLayer, mouse orbit camera, wheel to zoom,
+//! WASD/QE to fly (Shift for faster), Esc/Cmd+Q to quit.
 
 use anyhow::{Context, Result, bail};
 use objc2::rc::{Retained, autoreleasepool};
@@ -20,7 +20,7 @@ use crate::gpu::{COLOR_FORMAT, Texture};
 use crate::{Camera, Gpu, GpuScene};
 
 struct Live {
-    // Слой висит на view окна — он должен умереть раньше окна.
+    // The layer hangs on the window's view, so it must die before the window.
     layer: Retained<CAMetalLayer>,
     depth: Texture,
     window: Window,
@@ -35,7 +35,7 @@ struct Viewer {
     dragging: bool,
     last: Option<(f64, f64)>,
     modifiers: ModifiersState,
-    /// Нажатые клавиши полёта: W S A D Q E.
+    /// Fly keys held down: W S A D Q E.
     keys: std::collections::HashSet<String>,
     last_frame: Option<std::time::Instant>,
     error: Option<anyhow::Error>,
@@ -44,8 +44,8 @@ struct Viewer {
 impl Viewer {
     fn init(&mut self, el: &ActiveEventLoop) -> Result<()> {
         let window = el.create_window(Window::default_attributes().with_title(&self.title).with_inner_size(LogicalSize::new(1280.0, 800.0)))?;
-        let RawWindowHandle::AppKit(h) = window.window_handle()?.as_raw() else { bail!("ожидался AppKit") };
-        // SAFETY: ns_view жив, пока живо окно; окно переживает слой (порядок полей Live).
+        let RawWindowHandle::AppKit(h) = window.window_handle()?.as_raw() else { bail!("expected an AppKit handle") };
+        // SAFETY: ns_view lives as long as the window; the window outlives the layer (field order of Live).
         let view: &NSView = unsafe { h.ns_view.cast().as_ref() };
         let layer = CAMetalLayer::new();
         layer.setDevice(Some(&self.gpu.device));
@@ -62,7 +62,7 @@ impl Viewer {
         Ok(())
     }
 
-    /// WASD — вперёд/вбок, Q/E — вниз/вверх, Shift — быстрее.
+    /// WASD: forward/sideways, Q/E: down/up, Shift: faster.
     fn fly(&mut self) {
         let now = std::time::Instant::now();
         let dt = self.last_frame.map_or(0.0, |t| (now - t).as_secs_f32()).min(0.1);
@@ -157,9 +157,9 @@ impl ApplicationHandler for Viewer {
     }
 }
 
-/// Открывает окно и крутит цикл до закрытия.
+/// Opens a window and runs the loop until it is closed.
 pub fn run(title: &str, gpu: Gpu, scene: GpuScene, camera: Camera) -> Result<()> {
-    let el = EventLoop::new().context("цикл событий")?;
+    let el = EventLoop::new().context("event loop")?;
     el.set_control_flow(ControlFlow::Poll);
     let mut v = Viewer { title: title.to_owned(), gpu, scene, camera, live: None, dragging: false, last: None, modifiers: ModifiersState::empty(), keys: Default::default(), last_frame: None, error: None };
     el.run_app(&mut v)?;

@@ -1,4 +1,4 @@
-//! Свой базовый адрес и экспорты с ординалами как у dxgi.dll из GPTK.
+//! Own image base and exports with the same ordinals as GPTK's dxgi.dll.
 
 const EXPORTS: &[(&str, u16)] = &[
     ("CreateDXGIFactory", 1),
@@ -22,6 +22,6 @@ fn main() {
         def += &format!("    {name} @{ord}\n");
     }
     let path = out.join("dxgi.def");
-    std::fs::write(&path, def).expect("запись .def");
+    std::fs::write(&path, def).expect("write .def");
     println!("cargo:rustc-cdylib-link-arg={}", path.display());
 }

@@ -1,6 +1,6 @@
 [package]
 name = "grace-render"
-description = "Нативный рендер Elder Grace на Metal: меши, глубина, камера, окно, захват кадра (без знаний об играх)"
+description = "Elder Grace native Metal renderer: meshes, depth, camera, window, frame capture (game-agnostic)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

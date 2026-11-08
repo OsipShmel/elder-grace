@@ -1,6 +1,6 @@
 [package]
 name = "dxgi-proxy"
-description = "Shim Elder Grace внутри Wine: прокси dxgi.dll — перехват Present, журнал времени кадра, живая статистика"
+description = "Elder Grace in-Wine shim: dxgi.dll proxy - Present hook, frame-time log, live stats"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "grace-core"
-description = "Общие типы ядра Elder Grace: конфиг, пути"
+description = "Elder Grace core types: local config, paths"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

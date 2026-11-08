@@ -1,4 +1,4 @@
-//! Время кадра: отметка на каждом `Present`, CSV-журнал и живая статистика по TCP.
+//! Frame time: a timestamp on every `Present`, a CSV log and live stats over TCP.
 
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
@@ -10,7 +10,7 @@ use grace_proto::{PROTOCOL_VERSION, Request, Response, Stats, read_message, writ
 
 use crate::debug;
 
-/// DXGI_PRESENT_TEST: проверка без вывода кадра — не считаем.
+/// DXGI_PRESENT_TEST: a check without presenting a frame, not counted.
 const DXGI_PRESENT_TEST: u32 = 0x1;
 const DEFAULT_PORT: u16 = 47321;
 
@@ -38,7 +38,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     frame_ms: 0.0,
 });
 
-/// Открывает журнал и поднимает TCP-сервер статистики (один раз).
+/// Opens the log and starts the TCP stats server (once).
 pub fn start() {
     static STARTED: OnceLock<()> = OnceLock::new();
     STARTED.get_or_init(|| {
@@ -50,22 +50,22 @@ pub fn start() {
                     if let Ok(mut s) = STATE.lock() {
                         s.log = Some(w);
                     }
-                    debug(&format!("журнал времени кадра: {}", path.to_string_lossy()));
+                    debug(&format!("frame-time log: {}", path.to_string_lossy()));
                 }
-                Err(e) => debug(&format!("не открыть журнал кадров: {e}")),
+                Err(e) => debug(&format!("cannot open the frame log: {e}")),
             }
         }
         let port = std::env::var("GRACE_SHIM_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT);
         match TcpListener::bind(("127.0.0.1", port)) {
             Ok(listener) => {
-                debug(&format!("статистика: tcp 127.0.0.1:{port}"));
+                debug(&format!("stats: tcp 127.0.0.1:{port}"));
                 let _ = std::thread::Builder::new().name("grace-shim-stats".into()).spawn(move || {
                     for conn in listener.incoming().flatten() {
                         let _ = std::thread::Builder::new().name("grace-shim-conn".into()).spawn(move || serve(conn));
                     }
                 });
             }
-            Err(e) => debug(&format!("порт статистики {port} занят: {e}")),
+            Err(e) => debug(&format!("stats port {port} is taken: {e}")),
         }
     });
 }
@@ -87,7 +87,7 @@ pub fn on_present(flags: u32) {
             let _ = w.flush();
         }
     }
-    // Окно в 1 секунду для живой статистики.
+    // A 1-second window for live stats.
     let window_start = *s.window_start.get_or_insert(now);
     if dt > 0.0 {
         s.window_frames += 1;
@@ -111,7 +111,7 @@ fn snapshot() -> Stats {
         fps: s.as_ref().map_or(0.0, |s| s.fps),
         drawable_width: 0,
         drawable_height: 0,
-        device: "игра под эталоном (shim dxgi)".into(),
+        device: "game under the oracle (dxgi shim)".into(),
     }
 }
 
@@ -127,8 +127,8 @@ fn serve(conn: TcpStream) {
                 version: env!("CARGO_PKG_VERSION").into(),
             },
             Ok(Some(Request::Stats)) => Response::Stats(snapshot()),
-            Ok(Some(Request::Overrides { .. } | Request::Bound { .. } | Request::Camera { .. } | Request::Peek { .. } | Request::FindFloats { .. })) => Response::Error { message: "подмены — в shim d3d12 (порт 47322)".into() },
-            Err(e) => Response::Error { message: format!("неверный запрос: {e}") },
+            Ok(Some(Request::Overrides { .. } | Request::Bound { .. } | Request::Camera { .. } | Request::Peek { .. } | Request::FindFloats { .. })) => Response::Error { message: "overrides and memory requests live in the d3d12 shim (port 47322)".into() },
+            Err(e) => Response::Error { message: format!("bad request: {e}") },
         };
         if write_message(&mut writer, &response).is_err() {
             return;

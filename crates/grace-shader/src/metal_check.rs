@@ -1,4 +1,4 @@
-//! Нативная проверка `.metallib`: загрузка в MTLDevice и создание каждой функции.
+//! Native `.metallib` check: load into an MTLDevice and create every function.
 
 use std::path::Path;
 
@@ -7,7 +7,7 @@ use objc2_foundation::{NSString, NSURL};
 use objc2_metal::{MTLCreateSystemDefaultDevice, MTLDevice, MTLFunction, MTLLibrary};
 
 pub fn run(dir: &Path) -> Result<()> {
-    let device = MTLCreateSystemDefaultDevice().context("нет Metal-устройства")?;
+    let device = MTLCreateSystemDefaultDevice().context("no Metal device")?;
     let mut files: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("metallib"))
@@ -33,12 +33,12 @@ pub fn run(dir: &Path) -> Result<()> {
             }
             Err(e) => {
                 failed += 1;
-                println!("{name}: ОШИБКА {}", e.localizedDescription());
+                println!("{name}: ERROR {}", e.localizedDescription());
             }
         }
     }
     println!(
-        "Metal ({}): библиотек загружено {libs_ok}/{}, функций создано {funcs_ok}, ошибок {failed}",
+        "Metal ({}): libraries loaded {libs_ok}/{}, functions created {funcs_ok}, errors {failed}",
         device.name(),
         files.len()
     );

@@ -1,7 +1,7 @@
-//! Минимальный рендер на Metal: один пайплайн, вывод в окно (CAMetalLayer)
-//! или в офскрин-текстуру для `--capture`.
-//! Шейдеры пока компилируются в рантайме из исходника: офлайн-сборке в metallib
-//! нужен Metal Toolchain, а он появится позже.
+//! Minimal Metal renderer: one pipeline, output to a window (CAMetalLayer)
+//! or to an offscreen texture for `--capture`.
+//! Shaders are compiled at runtime from source: building a metallib offline
+//! needs the Metal Toolchain, which comes later.
 
 use std::path::Path;
 use std::ptr::NonNull;
@@ -23,7 +23,7 @@ use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 
 const PIXEL_FORMAT: MTLPixelFormat = MTLPixelFormat::BGRA8Unorm_sRGB;
 
-/// Устройство, очередь и пайплайны — всё, что не зависит от того, куда рисуем.
+/// Device, queue and pipelines: everything independent of the render target.
 pub struct Gpu {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
@@ -32,28 +32,28 @@ pub struct Gpu {
 
 impl Gpu {
     pub fn new() -> Result<Self> {
-        let device = MTLCreateSystemDefaultDevice().context("нет Metal-устройства")?;
-        let queue = device.newCommandQueue().context("не создаётся очередь команд")?;
+        let device = MTLCreateSystemDefaultDevice().context("no Metal device")?;
+        let queue = device.newCommandQueue().context("cannot create command queue")?;
 
         let source = NSString::from_str(include_str!("../shaders/triangle.metal"));
         let library = device
             .newLibraryWithSource_options_error(&source, None)
-            .map_err(|e| anyhow!("ошибка компиляции MSL: {}", e.localizedDescription()))?;
+            .map_err(|e| anyhow!("MSL compile error: {}", e.localizedDescription()))?;
         let function = |name: &str| {
             library
                 .newFunctionWithName(&NSString::from_str(name))
-                .with_context(|| format!("нет функции {name}"))
+                .with_context(|| format!("no function {name}"))
         };
 
         let desc = MTLRenderPipelineDescriptor::new();
         let (vs, fs) = (function("grace_vs")?, function("grace_fs")?);
         desc.setVertexFunction(Some(&vs));
         desc.setFragmentFunction(Some(&fs));
-        // SAFETY: индекс 0 всегда валиден для colorAttachments.
+        // SAFETY: index 0 is always valid for colorAttachments.
         unsafe { desc.colorAttachments().objectAtIndexedSubscript(0) }.setPixelFormat(PIXEL_FORMAT);
         let pipeline = device
             .newRenderPipelineStateWithDescriptor_error(&desc)
-            .map_err(|e| anyhow!("не создаётся пайплайн: {}", e.localizedDescription()))?;
+            .map_err(|e| anyhow!("cannot create pipeline: {}", e.localizedDescription()))?;
 
         Ok(Self { device, queue, pipeline })
     }
@@ -62,14 +62,14 @@ impl Gpu {
         self.device.name().to_string()
     }
 
-    /// Записывает кадр в `target`. Возвращает незакоммиченный командный буфер.
+    /// Encodes a frame into `target`. Returns an uncommitted command buffer.
     fn encode(
         &self,
         target: &ProtocolObject<dyn MTLTexture>,
         time: f32,
     ) -> Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>> {
         let pass = MTLRenderPassDescriptor::new();
-        // SAFETY: индекс 0 всегда валиден для colorAttachments.
+        // SAFETY: index 0 is always valid for colorAttachments.
         let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
         color.setTexture(Some(target));
         color.setLoadAction(MTLLoadAction::Clear);
@@ -79,7 +79,7 @@ impl Gpu {
         let cmd = self.queue.commandBuffer()?;
         let enc = cmd.renderCommandEncoderWithDescriptor(&pass)?;
         enc.setRenderPipelineState(&self.pipeline);
-        // SAFETY: указатель на f32 на стеке живёт до конца вызова, Metal копирует байты сразу.
+        // SAFETY: the pointer to an f32 on the stack lives until the end of the call; Metal copies the bytes immediately.
         unsafe {
             enc.setFragmentBytes_length_atIndex(NonNull::from(&time).cast(), size_of::<f32>(), 0);
             enc.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3);
@@ -88,28 +88,28 @@ impl Gpu {
         Some(cmd)
     }
 
-    /// Рисует один кадр в офскрин-текстуру и сохраняет PNG.
+    /// Renders one frame into an offscreen texture and saves a PNG.
     pub fn capture_png(&self, width: u32, height: u32, time: f32, out: &Path) -> Result<()> {
         let (w, h) = (width as usize, height as usize);
-        // SAFETY: формат и размеры валидны, mipmap не нужен.
+        // SAFETY: format and size are valid, no mipmaps needed.
         let td = unsafe {
             MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(PIXEL_FORMAT, w, h, false)
         };
         td.setUsage(MTLTextureUsage::RenderTarget);
-        // Unified memory: Shared-текстуру CPU читает без blit-копии.
+        // Unified memory: the CPU reads a Shared texture without a blit copy.
         td.setStorageMode(MTLStorageMode::Shared);
-        let texture = self.device.newTextureWithDescriptor(&td).context("не создаётся текстура захвата")?;
+        let texture = self.device.newTextureWithDescriptor(&td).context("cannot create capture texture")?;
 
-        let cmd = self.encode(&texture, time).context("не записывается кадр")?;
+        let cmd = self.encode(&texture, time).context("cannot encode frame")?;
         cmd.commit();
         cmd.waitUntilCompleted();
 
         let mut pixels = vec![0u8; w * h * 4];
         let region = MTLRegion { origin: MTLOrigin { x: 0, y: 0, z: 0 }, size: MTLSize { width: w, height: h, depth: 1 } };
-        // SAFETY: буфер ровно w*h*4 байт, bytesPerRow = w*4, GPU-работа завершена.
+        // SAFETY: the buffer is exactly w*h*4 bytes, bytesPerRow = w*4, GPU work is complete.
         unsafe {
             texture.getBytes_bytesPerRow_fromRegion_mipmapLevel(
-                NonNull::new(pixels.as_mut_ptr()).context("пустой буфер")?.cast(),
+                NonNull::new(pixels.as_mut_ptr()).context("empty buffer")?.cast(),
                 w * 4,
                 region,
                 0,
@@ -132,7 +132,7 @@ impl Gpu {
     }
 }
 
-/// Вывод в окно.
+/// Output to a window.
 pub struct Renderer {
     gpu: Gpu,
     layer: Retained<CAMetalLayer>,
@@ -169,8 +169,8 @@ impl Renderer {
         self.drawable_size = (w, h);
     }
 
-    /// Рисует кадр. Возвращает время CPU-работы над кадром — без ожидания
-    /// drawable, которое на самом деле ожидание vsync.
+    /// Renders a frame. Returns the CPU time spent on the frame, excluding the wait
+    /// for a drawable, which is really a vsync wait.
     pub fn draw(&mut self) -> Option<Duration> {
         autoreleasepool(|_| {
             let drawable = self.layer.nextDrawable()?;

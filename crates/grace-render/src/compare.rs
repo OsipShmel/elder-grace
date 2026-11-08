@@ -1,4 +1,4 @@
-//! Склейка двух кадров «слева | справа» в одну PNG (сравнение с эталоном).
+//! Joins two frames "left | right" into one PNG (comparison with the oracle).
 
 use std::path::Path;
 
@@ -14,7 +14,7 @@ fn load(path: &Path) -> Result<Rgba> {
     let mut dec = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(path).with_context(|| format!("{}", path.display()))?));
     dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = dec.read_info()?;
-    let mut buf = vec![0; reader.output_buffer_size().context("размер PNG")?];
+    let mut buf = vec![0; reader.output_buffer_size().context("PNG size")?];
     let info = reader.next_frame(&mut buf)?;
     let (w, h) = (info.width as usize, info.height as usize);
     let px = match info.color_type {
@@ -22,12 +22,12 @@ fn load(path: &Path) -> Result<Rgba> {
         png::ColorType::Rgb => buf[..w * h * 3].as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
         png::ColorType::GrayscaleAlpha => buf[..w * h * 2].as_chunks::<2>().0.iter().flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
         png::ColorType::Grayscale => buf[..w * h].iter().flat_map(|&g| [g, g, g, 255]).collect(),
-        other => bail!("{}: цветовой тип {other:?}", path.display()),
+        other => bail!("{}: color type {other:?}", path.display()),
     };
     Ok(Rgba { w, h, px })
 }
 
-/// Ближайший сосед — для сравнения на глаз этого достаточно.
+/// Nearest neighbor: good enough for comparing by eye.
 fn resize(img: &Rgba, w: usize, h: usize) -> Rgba {
     let mut px = vec![0; w * h * 4];
     for y in 0..h {
@@ -41,7 +41,7 @@ fn resize(img: &Rgba, w: usize, h: usize) -> Rgba {
     Rgba { w, h, px }
 }
 
-/// Обрезка по центру до соотношения сторон `w:h` (чёрные поля окна вокруг кадра игры).
+/// Center crop to the `w:h` aspect ratio (black window bars around the game frame).
 fn crop_to_aspect(img: Rgba, w: usize, h: usize) -> Rgba {
     let (cw, ch) = if img.w * h > img.h * w { (img.h * w / h, img.h) } else { (img.w, img.w * h / w) };
     if (cw, ch) == (img.w, img.h) {
@@ -55,7 +55,7 @@ fn crop_to_aspect(img: Rgba, w: usize, h: usize) -> Rgba {
     Rgba { w: cw, h: ch, px }
 }
 
-/// `left` и `right` бок о бок; правый обрезается по центру до пропорций левого и приводится к его размеру.
+/// `left` and `right` side by side; the right one is center-cropped to the left one's aspect and scaled to its size.
 pub fn side_by_side(left: &Path, right: &Path, out: &Path) -> Result<()> {
     let l = load(left)?;
     let r = resize(&crop_to_aspect(load(right)?, l.w, l.h), l.w, l.h);

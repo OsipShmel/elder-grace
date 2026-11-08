@@ -1,15 +1,15 @@
-//! «Рецепты» пайплайнов: из чего каждый PSO игры был создан — для перезагрузки подмен с диска.
+//! Pipeline "recipes": what each game PSO was created from, for reloading overrides from disk.
 //!
-//! Подмену можно добавить или поправить, пока игра идёт: `grace-ctl overrides reload`
-//! перечитывает каталог подмен и пересоздаёт подменённые PSO по рецептам. Рецепт —
-//! глубокая копия описания (input layout, stream output, view instancing со своими
-//! строками и массивами) **без байткода**: вместо него хеши стадий. Байткод при
-//! перезагрузке берётся из каталога подмен или из дампа шейдеров (`GRACE_SHADER_DUMP`),
-//! так что корпус (~115 МБ у Elden Ring) в памяти игры не держим: рецепт ≈ 1 КБ.
+//! An override can be added or edited while the game runs: `grace-ctl overrides reload`
+//! re-reads the override directory and recreates the overridden PSOs from recipes. A recipe is
+//! a deep copy of the description (input layout, stream output, view instancing with their
+//! strings and arrays) **without bytecode**: stage hashes are stored instead. On reload the
+//! bytecode comes from the override directory or from the shader dump (`GRACE_SHADER_DUMP`),
+//! so the corpus (~115 MB for a large game) is not kept in game memory: a recipe is about 1 KB.
 //!
-//! Каждому записанному PSO и его корневой сигнатуре добавляется ссылка: адрес PSO не
-//! достанется другому объекту, и пару «оригинал → подменённый» можно ставить в любой
-//! момент. Пишем рецепты, только когда задан каталог подмен (режим разработки).
+//! Each recorded PSO and its root signature get an extra reference: the PSO address cannot
+//! be reused by another object, so an "original -> override" pair can be set at any
+//! time. Recipes are recorded only when an override directory is set (development mode).
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -26,23 +26,23 @@ pub enum Kind {
 
 pub struct Recipe {
     pub kind: Kind,
-    /// Копия описания (graphics/compute) или потока подобъектов; поля байткода обнулены.
+    /// Copy of the description (graphics/compute) or subobject stream; bytecode fields are zeroed.
     pub bytes: Vec<u8>,
-    /// (смещение D3D12_SHADER_BYTECODE в `bytes`, стадия, fnv64 исходного байткода).
+    /// (offset of D3D12_SHADER_BYTECODE in `bytes`, stage, fnv64 of the original bytecode).
     pub shaders: Vec<(usize, &'static str, u64)>,
-    /// Строки и массивы, на которые указывает `bytes`.
+    /// Strings and arrays that `bytes` points to.
     _owned: Vec<Box<[u8]>>,
 }
 
 static RECIPES: Mutex<Option<HashMap<usize, Recipe>>> = Mutex::new(None);
 
-/// Пишем ли рецепты: только при заданном каталоге подмен.
+/// Whether recipes are recorded: only when an override directory is set.
 pub fn active() -> bool {
     static ACTIVE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ACTIVE.get_or_init(|| std::env::var_os("GRACE_SHADER_OVERRIDE").is_some())
 }
 
-/// Шейдеры PSO по рецепту: (стадия, хеш).
+/// Shaders of a PSO by its recipe: (stage, hash).
 pub fn shaders_of(pso: usize) -> Option<Vec<(&'static str, u64)>> {
     let map = RECIPES.lock().ok()?;
     let r = map.as_ref()?.get(&pso)?;
@@ -65,76 +65,76 @@ fn write_usize(b: &mut [u8], off: usize, v: usize) {
     b[off..off + 8].copy_from_slice(&v.to_le_bytes());
 }
 
-/// Копия `len` байт по `ptr` во владение рецепта; возвращает новый адрес (0 для null).
+/// Copies `len` bytes at `ptr` into recipe ownership; returns the new address (0 for null).
 ///
 /// # Safety
-/// `ptr` читаем на `len` байт или null.
+/// `ptr` is readable for `len` bytes or null.
 unsafe fn own(owned: &mut Vec<Box<[u8]>>, ptr: usize, len: usize) -> usize {
     if ptr == 0 || len == 0 {
         return 0;
     }
-    // SAFETY: по контракту функции.
+    // SAFETY: per the function contract.
     let copy: Box<[u8]> = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) }.into();
     let addr = copy.as_ptr() as usize;
     owned.push(copy);
     addr
 }
 
-/// Копия C-строки (с нулём).
+/// Copy of a C string (with the terminator).
 ///
 /// # Safety
-/// `ptr` — нуль-терминированная строка или null.
+/// `ptr` is a null-terminated string or null.
 unsafe fn own_cstr(owned: &mut Vec<Box<[u8]>>, ptr: usize) -> usize {
     if ptr == 0 {
         return 0;
     }
-    // SAFETY: строка нуль-терминирована по контракту.
+    // SAFETY: the string is null-terminated per the contract.
     let len = unsafe { std::ffi::CStr::from_ptr(ptr as *const std::ffi::c_char) }.to_bytes_with_nul().len();
     unsafe { own(owned, ptr, len) }
 }
 
-/// D3D12_SHADER_BYTECODE по смещению `off`: запомнить хеш, обнулить поле.
+/// D3D12_SHADER_BYTECODE at offset `off`: remember the hash, zero the field.
 ///
 /// # Safety
-/// Указатель в `bytes[off..]` — байткод игры, живой на время хука.
+/// The pointer in `bytes[off..]` is game bytecode, alive for the duration of the hook.
 unsafe fn take_shader(bytes: &mut [u8], off: usize, stage: &'static str, shaders: &mut Vec<(usize, &'static str, u64)>) {
     let (ptr, len) = (read_usize(bytes, off), read_usize(bytes, off + 8));
     if ptr != 0 && len != 0 && len <= 64 << 20 {
-        // SAFETY: по контракту функции.
+        // SAFETY: per the function contract.
         let hash = fnv1a(unsafe { std::slice::from_raw_parts(ptr as *const u8, len) });
         shaders.push((off, stage, hash));
     }
     bytes[off..off + 16].fill(0);
 }
 
-/// D3D12_INPUT_LAYOUT_DESC { const D3D12_INPUT_ELEMENT_DESC*, UINT } по смещению `off`.
-/// Элемент — 32 байта, SemanticName по смещению 0.
+/// D3D12_INPUT_LAYOUT_DESC { const D3D12_INPUT_ELEMENT_DESC*, UINT } at offset `off`.
+/// An element is 32 bytes, SemanticName at offset 0.
 ///
 /// # Safety
-/// Указатели в `bytes[off..]` — живые данные игры.
+/// Pointers in `bytes[off..]` are live game data.
 unsafe fn own_input_layout(bytes: &mut [u8], off: usize, owned: &mut Vec<Box<[u8]>>) {
     let (ptr, n) = (read_usize(bytes, off), read_u32(bytes, off + 8) as usize);
     let new = unsafe { own(owned, ptr, n * 32) };
     write_usize(bytes, off, new);
     for i in 0..n {
         let el = (new + i * 32) as *mut usize;
-        // SAFETY: элемент лежит в нашей копии (выравнивание не гарантировано); имя — строка игры.
+        // SAFETY: the element is in our copy (alignment not guaranteed); the name is a game string.
         unsafe { el.write_unaligned(own_cstr(owned, el.read_unaligned())) };
     }
 }
 
 /// D3D12_STREAM_OUTPUT_DESC { decl*, UINT n, UINT* strides, UINT nstrides, UINT rasterized }.
-/// Элемент объявления — 24 байта, SemanticName по смещению 8.
+/// A declaration element is 24 bytes, SemanticName at offset 8.
 ///
 /// # Safety
-/// Указатели в `bytes[off..]` — живые данные игры.
+/// Pointers in `bytes[off..]` are live game data.
 unsafe fn own_stream_output(bytes: &mut [u8], off: usize, owned: &mut Vec<Box<[u8]>>) {
     let (decl, n) = (read_usize(bytes, off), read_u32(bytes, off + 8) as usize);
     let new = unsafe { own(owned, decl, n * 24) };
     write_usize(bytes, off, new);
     for i in 0..n {
         let name = (new + i * 24 + 8) as *mut usize;
-        // SAFETY: элемент в нашей копии (выравнивание не гарантировано); имя — строка игры.
+        // SAFETY: the element is in our copy (alignment not guaranteed); the name is a game string.
         unsafe { name.write_unaligned(own_cstr(owned, name.read_unaligned())) };
     }
     let (strides, ns) = (read_usize(bytes, off + 16), read_u32(bytes, off + 24) as usize);
@@ -142,15 +142,15 @@ unsafe fn own_stream_output(bytes: &mut [u8], off: usize, owned: &mut Vec<Box<[u
     write_usize(bytes, off + 16, new);
 }
 
-/// AddRef COM-объекта по адресу (слот 1 vtable).
+/// AddRef of the COM object at an address (vtable slot 1).
 ///
 /// # Safety
-/// `obj` — живой COM-объект или 0.
+/// `obj` is a live COM object or 0.
 unsafe fn add_ref(obj: usize) {
     if obj == 0 {
         return;
     }
-    // SAFETY: слот 1 vtable любого COM-объекта — AddRef.
+    // SAFETY: vtable slot 1 of any COM object is AddRef.
     unsafe {
         let f: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(*(*(obj as *const *const usize)).add(1));
         f(obj as *mut c_void);
@@ -162,24 +162,24 @@ fn insert(pso: *mut c_void, recipe: Recipe) {
     let map = map.get_or_insert_with(HashMap::new);
     let key = pso as usize;
     if !map.contains_key(&key) {
-        // SAFETY: pso только что отдан игре и жив.
+        // SAFETY: the pso was just handed to the game and is alive.
         unsafe { add_ref(key) };
     }
     map.insert(key, recipe);
 }
 
-/// Смещения в D3D12_GRAPHICS_PIPELINE_STATE_DESC (x64, 656 байт).
+/// Offsets in D3D12_GRAPHICS_PIPELINE_STATE_DESC (x64, 656 bytes).
 const G_STREAM_OUTPUT: usize = 88;
 const G_INPUT_LAYOUT: usize = 552;
 const G_CACHED_PSO: usize = 632;
 
 /// # Safety
-/// `pso` — только что созданный PSO, `desc` — его D3D12_GRAPHICS_PIPELINE_STATE_DESC.
+/// `pso` is a just-created PSO, `desc` its D3D12_GRAPHICS_PIPELINE_STATE_DESC.
 pub unsafe fn record_graphics(pso: *mut c_void, desc: *const u8) {
     if !active() || pso.is_null() || desc.is_null() {
         return;
     }
-    // SAFETY: описание игры — 656 байт.
+    // SAFETY: the game's description is 656 bytes.
     let mut bytes = unsafe { std::slice::from_raw_parts(desc, crate::overrides::GRAPHICS_DESC_SIZE) }.to_vec();
     let (mut owned, mut shaders) = (Vec::new(), Vec::new());
     unsafe {
@@ -195,12 +195,12 @@ pub unsafe fn record_graphics(pso: *mut c_void, desc: *const u8) {
 }
 
 /// # Safety
-/// `pso` — только что созданный PSO, `desc` — его D3D12_COMPUTE_PIPELINE_STATE_DESC.
+/// `pso` is a just-created PSO, `desc` its D3D12_COMPUTE_PIPELINE_STATE_DESC.
 pub unsafe fn record_compute(pso: *mut c_void, desc: *const u8) {
     if !active() || pso.is_null() || desc.is_null() {
         return;
     }
-    // SAFETY: описание игры — 56 байт.
+    // SAFETY: the game's description is 56 bytes.
     let mut bytes = unsafe { std::slice::from_raw_parts(desc, crate::overrides::COMPUTE_DESC_SIZE) }.to_vec();
     let mut shaders = Vec::new();
     unsafe {
@@ -212,23 +212,23 @@ pub unsafe fn record_compute(pso: *mut c_void, desc: *const u8) {
 }
 
 /// # Safety
-/// `pso` — только что созданный PSO, `stream` — его поток подобъектов длиной `size`.
+/// `pso` is a just-created PSO, `stream` its subobject stream of length `size`.
 pub unsafe fn record_stream(pso: *mut c_void, stream: *const u8, size: usize) {
     if !active() || pso.is_null() || stream.is_null() {
         return;
     }
-    // SAFETY: поток игры длиной size.
+    // SAFETY: the game's stream of length size.
     let mut bytes = unsafe { std::slice::from_raw_parts(stream, size) }.to_vec();
     let (mut owned, mut shaders) = (Vec::new(), Vec::new());
     let mut off = 0usize;
     while off + 4 <= size {
         let ty = read_u32(&bytes, off);
         let Some((data_off, data_size)) = subobject_layout(ty) else {
-            debug(&format!("рецепт: неизвестный подобъект {ty}, PSO не записан"));
+            debug(&format!("recipe: unknown subobject {ty}, PSO not recorded"));
             return;
         };
         let d = off + data_off;
-        // SAFETY: указатели в подобъектах — живые данные игры на время хука.
+        // SAFETY: pointers in subobjects are live game data for the duration of the hook.
         unsafe {
             match ty {
                 0 => add_ref(read_usize(&bytes, d)),
@@ -244,7 +244,7 @@ pub unsafe fn record_stream(pso: *mut c_void, stream: *const u8, size: usize) {
                 12 => own_input_layout(&mut bytes, d, &mut owned),
                 19 => bytes[d..d + 16].fill(0),
                 22 => {
-                    // D3D12_VIEW_INSTANCING_DESC { UINT n; const LOCATION* (8 байт каждая); flags }
+                    // D3D12_VIEW_INSTANCING_DESC { UINT n; const LOCATION* (8 bytes each); flags }
                     let n = read_u32(&bytes, d) as usize;
                     let new = own(&mut owned, read_usize(&bytes, d + 8), n * 8);
                     write_usize(&mut bytes, d + 8, new);
@@ -257,7 +257,7 @@ pub unsafe fn record_stream(pso: *mut c_void, stream: *const u8, size: usize) {
     insert(pso, Recipe { kind: Kind::Stream, bytes, shaders, _owned: owned });
 }
 
-/// Итог перезагрузки.
+/// Reload result.
 #[derive(Default)]
 pub struct Rebuilt {
     pub created: usize,
@@ -265,10 +265,10 @@ pub struct Rebuilt {
     pub cleared: usize,
 }
 
-/// Пересоздаёт подменённые PSO по рецептам с текущей таблицей подмен.
+/// Recreates overridden PSOs from recipes with the current override table.
 ///
-/// `create(kind, bytes, out)` создаёт PSO из готового описания/потока.
-/// `original(stage, hash)` — исходный байткод стадии (из дампа).
+/// `create(kind, bytes, out)` creates a PSO from a ready description/stream.
+/// `original(stage, hash)` is the original bytecode of a stage (from the dump).
 pub fn rebuild(
     lookup: impl Fn(u64) -> Option<&'static [u8]>,
     original: impl Fn(&str, u64) -> Option<Vec<u8>>,
@@ -298,7 +298,7 @@ pub fn rebuild(
                         p
                     }
                     None => {
-                        debug(&format!("перезагрузка: нет исходного {hash:016x}.{stage} в дампе"));
+                        debug(&format!("reload: original {hash:016x}.{stage} is not in the dump"));
                         ok = false;
                         break;
                     }
@@ -315,7 +315,7 @@ pub fn rebuild(
             res.created += 1;
         } else {
             if ok {
-                debug(&format!("перезагрузка: PSO не создан ({hr:#x})"));
+                debug(&format!("reload: PSO not created ({hr:#x})"));
             }
             set_pair(key, None);
             res.failed += 1;

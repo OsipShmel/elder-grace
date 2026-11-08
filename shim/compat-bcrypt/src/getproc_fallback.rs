@@ -1,12 +1,12 @@
-//! Запасной `GetProcAddress` для модулей, которые ищут функции Windows 10+.
+//! Fallback `GetProcAddress` for modules that look up Windows 10+ functions.
 //!
-//! Chromium делает `GetProcAddress(GetModuleHandle("api-ms-win-core-realtime-l1-1-1.dll"),
-//! "QueryUnbiasedInterruptTimePrecise")`. Wine 7.7 разрешает имя API-set в свой
-//! `kernelbase`, где функции нет, и получает NULL → фатальная проверка.
+//! Chromium does `GetProcAddress(GetModuleHandle("api-ms-win-core-realtime-l1-1-1.dll"),
+//! "QueryUnbiasedInterruptTimePrecise")`. Wine 7.7 resolves the API-set name to its own
+//! `kernelbase`, which lacks the function, and gets NULL -> fatal check.
 //!
-//! Обёртка сначала спрашивает настоящий `GetProcAddress`, и только если тот вернул
-//! NULL — ищет функцию с тем же именем в compat-DLL (`compat-realtime`).
-//! Для всех существующих функций поведение не меняется.
+//! The wrapper asks the real `GetProcAddress` first, and only when it returns
+//! NULL looks for a function with the same name in the compat DLL (`compat-realtime`).
+//! Behavior for every existing function stays the same.
 
 use std::ffi::{CStr, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -25,10 +25,10 @@ unsafe extern "system" {
 }
 
 unsafe extern "system" fn hooked_get_proc(module: *mut c_void, name: *const u8) -> *mut c_void {
-    // SAFETY: адрес настоящего GetProcAddress записан до установки хука.
+    // SAFETY: the address of the real GetProcAddress was stored before the hook was installed.
     let real: GetProcFn = unsafe { std::mem::transmute(REAL_GETPROC.load(Ordering::Acquire)) };
     let found = unsafe { real(module, name) };
-    // Импорт по ординалу (младшее слово) — не наш случай.
+    // Import by ordinal (low word): not our case.
     if !found.is_null() || (name as usize) <= 0xFFFF {
         return found;
     }
@@ -38,19 +38,19 @@ unsafe extern "system" fn hooked_get_proc(module: *mut c_void, name: *const u8) 
     }
     let ours = unsafe { real(fallback, name) };
     if !ours.is_null() {
-        // SAFETY: name — нуль-терминированная строка от вызывающего.
+        // SAFETY: name is a null-terminated string from the caller.
         let n = unsafe { CStr::from_ptr(name.cast()) }.to_string_lossy();
         debug(&format!("GetProcAddress({n}) → compat"));
     }
     ours
 }
 
-/// Включает запасной GetProcAddress, если загружена compat-DLL.
+/// Enables the fallback GetProcAddress if the compat DLL is loaded.
 pub fn install(fallback_module: *mut c_void) {
     if fallback_module.is_null() {
         return;
     }
-    // SAFETY: kernel32 загружен всегда; берём настоящий GetProcAddress до установки хука.
+    // SAFETY: kernel32 is always loaded; take the real GetProcAddress before installing the hook.
     let real = unsafe { GetProcAddress(GetModuleHandleA(c"kernel32.dll".as_ptr().cast()), c"GetProcAddress".as_ptr().cast()) };
     if real.is_null() {
         return;
@@ -63,7 +63,7 @@ pub fn install(fallback_module: *mut c_void) {
             from: None,
             import: Import::Name(b"GetProcAddress"),
             hook: hooked_get_proc as *const () as usize,
-            label: "запасной GetProcAddress",
+            label: "fallback GetProcAddress",
         });
     }
 }

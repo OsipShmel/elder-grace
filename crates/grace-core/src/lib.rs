@@ -1,4 +1,4 @@
-//! Ядро Elder Grace: то, что нужно всем крейтам и не знает ни об одной игре.
+//! Elder Grace core: what every crate needs, with no knowledge of any game.
 
 pub mod config;
 pub mod paths;

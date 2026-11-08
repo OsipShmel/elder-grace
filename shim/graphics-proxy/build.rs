@@ -1,5 +1,5 @@
-//! Свой базовый адрес и экспорты с ординалами как у настоящего d3d12.dll:
-//! игры импортируют D3D12CreateDevice по ординалу 101, D3D12GetDebugInterface — 102.
+//! Own image base and exports with the same ordinals as the real d3d12.dll:
+//! games import D3D12CreateDevice by ordinal 101 and D3D12GetDebugInterface by 102.
 
 const EXPORTS: &[(&str, u16)] = &[
     ("GetBehaviorValue", 100),
@@ -21,7 +21,7 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
-    // Дефолтный 0x180000000 занят libcef.dll и др.
+    // The default 0x180000000 is taken by libcef.dll and others.
     println!("cargo:rustc-cdylib-link-arg=-Wl,--image-base=0x6f2000000");
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
     let mut def = String::from("EXPORTS\n");
@@ -29,6 +29,6 @@ fn main() {
         def += &format!("    {name} @{ord}\n");
     }
     let path = out.join("d3d12.def");
-    std::fs::write(&path, def).expect("запись .def");
+    std::fs::write(&path, def).expect("write .def");
     println!("cargo:rustc-cdylib-link-arg={}", path.display());
 }

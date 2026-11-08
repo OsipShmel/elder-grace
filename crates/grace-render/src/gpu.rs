@@ -1,4 +1,4 @@
-//! Metal: устройство, пайплайн мешей с глубиной, загрузка сцены, кадр в текстуру и в PNG.
+//! Metal: device, mesh pipeline with depth, scene upload, frame to texture and to PNG.
 
 use std::ffi::c_void;
 use std::path::Path;
@@ -43,12 +43,12 @@ struct GpuMesh {
     index_count: usize,
     color: [f32; 4],
     texture: Option<usize>,
-    /// Матрицы экземпляров (float4x4 по столбцам).
+    /// Instance matrices (float4x4, column-major).
     instances: Buffer,
     instance_count: usize,
 }
 
-/// Сцена в памяти GPU (unified memory: буферы Shared, без копий через blit).
+/// Scene in GPU memory (unified memory: Shared buffers, no blit copies).
 pub struct GpuScene {
     meshes: Vec<GpuMesh>,
     textures: Vec<Texture>,
@@ -60,7 +60,7 @@ pub struct Gpu {
     pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     depth_state: Retained<ProtocolObject<dyn MTLDepthStencilState>>,
     sampler: Retained<ProtocolObject<dyn MTLSamplerState>>,
-    /// 1×1 белая — привязывается, когда у меша нет текстуры.
+    /// 1x1 white, bound when a mesh has no texture.
     white: Texture,
 }
 
@@ -84,20 +84,20 @@ fn pixel_format(f: Format) -> MTLPixelFormat {
     }
 }
 
-/// Текстура со всеми уровнями мипов как есть (BCn без перекодирования).
+/// Texture with all mip levels as is (BCn without transcoding).
 fn texture(device: &Device, t: &TextureData) -> Result<Texture> {
-    // SAFETY: формат и размеры валидны.
+    // SAFETY: format and size are valid.
     let td = unsafe { MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(pixel_format(t.format), t.width, t.height, false) };
-    // SAFETY: число уровней не больше, чем допускает размер (уровни взяты из DDS, ≥ 1).
+    // SAFETY: the level count does not exceed what the size allows (levels come from the DDS, >= 1).
     unsafe { td.setMipmapLevelCount(t.mips.len()) };
     td.setUsage(MTLTextureUsage::ShaderRead);
-    let tex = device.newTextureWithDescriptor(&td).context("не создаётся текстура")?;
+    let tex = device.newTextureWithDescriptor(&td).context("cannot create texture")?;
     let (mut w, mut h) = (t.width, t.height);
     for (level, bytes) in t.mips.iter().enumerate() {
         let (row, _) = t.format.level_size(w, h);
         let region = MTLRegion { origin: MTLOrigin { x: 0, y: 0, z: 0 }, size: MTLSize { width: w, height: h, depth: 1 } };
-        // SAFETY: bytes — ровно один уровень этого размера (проверено при разборе DDS).
-        unsafe { tex.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, level, NonNull::new(bytes.as_ptr() as *mut c_void).context("пустой уровень")?, row) };
+        // SAFETY: bytes is exactly one level of this size (checked when parsing the DDS).
+        unsafe { tex.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, level, NonNull::new(bytes.as_ptr() as *mut c_void).context("empty level")?, row) };
         (w, h) = ((w / 2).max(1), (h / 2).max(1));
     }
     Ok(tex)
@@ -105,12 +105,12 @@ fn texture(device: &Device, t: &TextureData) -> Result<Texture> {
 
 fn buffer<T: Copy>(device: &Device, data: &[T]) -> Result<Buffer> {
     let len = std::mem::size_of_val(data).max(16);
-    let ptr = NonNull::new(data.as_ptr() as *mut c_void).context("пустой буфер")?;
-    // SAFETY: data живёт до конца вызова, Metal копирует байты в новый буфер.
-    unsafe { device.newBufferWithBytes_length_options(ptr, len, MTLResourceOptions::StorageModeShared) }.context("не создаётся буфер")
+    let ptr = NonNull::new(data.as_ptr() as *mut c_void).context("empty buffer")?;
+    // SAFETY: data lives until the end of the call; Metal copies the bytes into the new buffer.
+    unsafe { device.newBufferWithBytes_length_options(ptr, len, MTLResourceOptions::StorageModeShared) }.context("cannot create buffer")
 }
 
-/// Цвет меша по номеру — чтобы части модели различались, пока нет текстур.
+/// Mesh color by index, so model parts are distinguishable before textures exist.
 fn palette(i: usize) -> [f32; 4] {
     const P: [[f32; 3]; 6] = [[0.62, 0.58, 0.52], [0.45, 0.52, 0.42], [0.55, 0.47, 0.40], [0.50, 0.50, 0.56], [0.60, 0.54, 0.44], [0.42, 0.46, 0.50]];
     let c = P[i % P.len()];
@@ -119,24 +119,24 @@ fn palette(i: usize) -> [f32; 4] {
 
 impl Gpu {
     pub fn new() -> Result<Self> {
-        let device = MTLCreateSystemDefaultDevice().context("нет Metal-устройства")?;
-        let queue = device.newCommandQueue().context("не создаётся очередь")?;
+        let device = MTLCreateSystemDefaultDevice().context("no Metal device")?;
+        let queue = device.newCommandQueue().context("cannot create command queue")?;
         let library = device
             .newLibraryWithSource_options_error(&NSString::from_str(include_str!("../shaders/mesh.metal")), None)
-            .map_err(|e| anyhow!("ошибка MSL: {}", e.localizedDescription()))?;
-        let function = |name: &str| library.newFunctionWithName(&NSString::from_str(name)).with_context(|| format!("нет функции {name}"));
+            .map_err(|e| anyhow!("MSL error: {}", e.localizedDescription()))?;
+        let function = |name: &str| library.newFunctionWithName(&NSString::from_str(name)).with_context(|| format!("no function {name}"));
         let desc = MTLRenderPipelineDescriptor::new();
         let (vs, fs) = (function("grace_mesh_vs")?, function("grace_mesh_fs")?);
         desc.setVertexFunction(Some(&vs));
         desc.setFragmentFunction(Some(&fs));
-        // SAFETY: индекс 0 всегда валиден для colorAttachments.
+        // SAFETY: index 0 is always valid for colorAttachments.
         unsafe { desc.colorAttachments().objectAtIndexedSubscript(0) }.setPixelFormat(COLOR_FORMAT);
         desc.setDepthAttachmentPixelFormat(DEPTH_FORMAT);
-        let pipeline = device.newRenderPipelineStateWithDescriptor_error(&desc).map_err(|e| anyhow!("пайплайн: {}", e.localizedDescription()))?;
+        let pipeline = device.newRenderPipelineStateWithDescriptor_error(&desc).map_err(|e| anyhow!("pipeline: {}", e.localizedDescription()))?;
         let ds = MTLDepthStencilDescriptor::new();
         ds.setDepthCompareFunction(MTLCompareFunction::Less);
         ds.setDepthWriteEnabled(true);
-        let depth_state = device.newDepthStencilStateWithDescriptor(&ds).context("не создаётся состояние глубины")?;
+        let depth_state = device.newDepthStencilStateWithDescriptor(&ds).context("cannot create depth state")?;
         let sd = MTLSamplerDescriptor::new();
         sd.setMinFilter(MTLSamplerMinMagFilter::Linear);
         sd.setMagFilter(MTLSamplerMinMagFilter::Linear);
@@ -144,7 +144,7 @@ impl Gpu {
         sd.setSAddressMode(MTLSamplerAddressMode::Repeat);
         sd.setTAddressMode(MTLSamplerAddressMode::Repeat);
         sd.setMaxAnisotropy(8);
-        let sampler = device.newSamplerStateWithDescriptor(&sd).context("не создаётся сэмплер")?;
+        let sampler = device.newSamplerStateWithDescriptor(&sd).context("cannot create sampler")?;
         let white = texture(&device, &TextureData { format: Format::Rgba8, width: 1, height: 1, mips: vec![vec![255; 4]] })?;
         Ok(Self { device, queue, pipeline, depth_state, sampler, white })
     }
@@ -189,13 +189,13 @@ impl Gpu {
         Ok(GpuScene { meshes, textures })
     }
 
-    /// Текстура глубины под размер цели; Memoryless — живёт только в тайловой памяти GPU.
+    /// Depth texture sized to the target; Memoryless, so it lives only in GPU tile memory.
     pub fn depth_texture(&self, w: usize, h: usize) -> Result<Texture> {
-        // SAFETY: формат и размеры валидны.
+        // SAFETY: format and size are valid.
         let td = unsafe { MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(DEPTH_FORMAT, w.max(1), h.max(1), false) };
         td.setUsage(MTLTextureUsage::RenderTarget);
         td.setStorageMode(MTLStorageMode::Memoryless);
-        self.device.newTextureWithDescriptor(&td).context("не создаётся глубина")
+        self.device.newTextureWithDescriptor(&td).context("cannot create depth texture")
     }
 
     pub(crate) fn encode(
@@ -206,7 +206,7 @@ impl Gpu {
         camera: &Camera,
     ) -> Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>> {
         let pass = MTLRenderPassDescriptor::new();
-        // SAFETY: индекс 0 всегда валиден для colorAttachments.
+        // SAFETY: index 0 is always valid for colorAttachments.
         let color = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
         color.setTexture(Some(target));
         color.setLoadAction(MTLLoadAction::Clear);
@@ -226,14 +226,14 @@ impl Gpu {
         let enc = cmd.renderCommandEncoderWithDescriptor(&pass)?;
         enc.setRenderPipelineState(&self.pipeline);
         enc.setDepthStencilState(Some(&self.depth_state));
-        // SAFETY: сэмплер жив, пока жив Gpu.
+        // SAFETY: the sampler lives as long as Gpu.
         unsafe { enc.setFragmentSamplerState_atIndex(Some(&self.sampler), 0) };
         for m in &scene.meshes {
             let tex = m.texture.and_then(|t| scene.textures.get(t));
             let has = if tex.is_some() { 1.0 } else { 0.0 };
             let u = Uniforms { view_proj, light: [light[0], light[1], light[2], 0.0], color: m.color, params: [has, 0.0, 0.0, 0.0] };
-            // SAFETY: буферы живы, пока жива сцена (до конца кадра — commit/wait снаружи);
-            // uniforms копируются Metal сразу; индексы проверены парсером (< числа вершин).
+            // SAFETY: buffers live as long as the scene (until the end of the frame; commit/wait happen outside);
+            // Metal copies uniforms immediately; indices were checked by the parser (< vertex count).
             unsafe {
                 enc.setVertexBuffer_offset_atIndex(Some(&m.positions), 0, 0);
                 enc.setVertexBuffer_offset_atIndex(Some(&m.normals), 0, 1);
@@ -256,24 +256,24 @@ impl Gpu {
         Some(cmd)
     }
 
-    /// Один кадр без окна → PNG.
+    /// One frame without a window -> PNG.
     pub fn capture_png(&self, scene: &GpuScene, camera: &Camera, width: u32, height: u32, out: &Path) -> Result<()> {
         let (w, h) = (width as usize, height as usize);
-        // SAFETY: формат и размеры валидны.
+        // SAFETY: format and size are valid.
         let td = unsafe { MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(COLOR_FORMAT, w, h, false) };
         td.setUsage(MTLTextureUsage::RenderTarget);
         td.setStorageMode(MTLStorageMode::Shared);
-        let texture = self.device.newTextureWithDescriptor(&td).context("текстура захвата")?;
+        let texture = self.device.newTextureWithDescriptor(&td).context("capture texture")?;
         let depth = self.depth_texture(w, h)?;
-        let cmd = self.encode(&texture, &depth, scene, camera).context("кадр не записан")?;
+        let cmd = self.encode(&texture, &depth, scene, camera).context("frame was not encoded")?;
         cmd.commit();
         cmd.waitUntilCompleted();
 
         let mut pixels = vec![0u8; w * h * 4];
         let region = MTLRegion { origin: MTLOrigin { x: 0, y: 0, z: 0 }, size: MTLSize { width: w, height: h, depth: 1 } };
-        // SAFETY: буфер w*h*4, bytesPerRow w*4, GPU-работа завершена.
+        // SAFETY: buffer is w*h*4, bytesPerRow w*4, GPU work is complete.
         unsafe {
-            texture.getBytes_bytesPerRow_fromRegion_mipmapLevel(NonNull::new(pixels.as_mut_ptr()).context("буфер")?.cast(), w * 4, region, 0);
+            texture.getBytes_bytesPerRow_fromRegion_mipmapLevel(NonNull::new(pixels.as_mut_ptr()).context("buffer")?.cast(), w * 4, region, 0);
         }
         for px in pixels.as_chunks_mut::<4>().0 {
             px.swap(0, 2);

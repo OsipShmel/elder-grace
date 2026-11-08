@@ -1,4 +1,4 @@
-//! Минимум линейной алгебры для камеры: матрицы 4×4 по столбцам (как в MSL).
+//! Minimal linear algebra for the camera: 4x4 column-major matrices (as in MSL).
 
 pub type Vec3 = [f32; 3];
 pub type Mat4 = [f32; 16];
@@ -20,7 +20,7 @@ pub fn normalize(a: Vec3) -> Vec3 {
     [a[0] / l, a[1] / l, a[2] / l]
 }
 
-/// Перспектива (правая система, глубина 0..1 как в Metal).
+/// Perspective (right-handed, depth 0..1 as in Metal).
 pub fn perspective(fovy: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
     let f = 1.0 / (fovy / 2.0).tan();
     let r = far / (near - far);
@@ -58,7 +58,7 @@ mod tests {
         let vp = mul(&perspective(1.0, 1.5, 0.1, 100.0), &look_at([3.0, 2.0, 5.0], [0.0, 1.0, 0.0], [0.0, 1.0, 0.0]));
         let c = transform(&vp, [0.0, 1.0, 0.0]);
         let (x, y, z) = (c[0] / c[3], c[1] / c[3], c[2] / c[3]);
-        assert!(x.abs() < 1e-5 && y.abs() < 1e-5, "цель не в центре: {x} {y}");
-        assert!((0.0..1.0).contains(&z), "глубина вне 0..1: {z}");
+        assert!(x.abs() < 1e-5 && y.abs() < 1e-5, "target is not centered: {x} {y}");
+        assert!((0.0..1.0).contains(&z), "depth outside 0..1: {z}");
     }
 }

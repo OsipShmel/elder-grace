@@ -1,19 +1,22 @@
-# Скопируй в config/local.toml (он в .gitignore) и поправь пути.
+# Copy to config/local.toml (it is in .gitignore) and adjust the paths.
 
 [paths]
-local_dir = "/Users/<you>/CodeProject/ProjectPort/.local"
+# Shared local data: prefixes, caches, captures, traces. Never in git.
+local_dir = "/path/to/ProjectPort/.local"
 
+# One section per game; the key is the game id (`grace-<id>` is its repository).
 [games.eldenring]
-# Чистая установка из Steam. Только чтение, никогда не изменяется.
-pristine_dir = "/путь/к/ELDEN RING/Game"
-# Рабочая копия для эталона и shim. Сюда можно класть свои файлы.
-sandbox_dir  = "/Users/<you>/CodeProject/ProjectPort/.local/game_bean/elden_ring"
-# Приготовленный кэш для нативного рантайма.
-cache_dir    = "/Users/<you>/CodeProject/ProjectPort/.local/cache/eldenring"
+# Pristine install from your store. Read-only, never modified.
+pristine_dir = "/path/to/ELDEN RING/Game"
+# Working copy for the oracle and the shims. Your own files may go here.
+sandbox_dir  = "/path/to/ProjectPort/.local/game_bean/elden_ring"
+# Prepared cache for the native runtime.
+cache_dir    = "/path/to/ProjectPort/.local/cache/eldenring"
 exe          = "eldenring.exe"
 steam_appid  = 1245620
+window_title = "ELDEN RING"
 
 [oracle]
-# Среда эталона: "gptk" (cargo xtask oracle) или "crossover"
+# Oracle environment: "gptk" (cargo xtask oracle) or "crossover"
 env    = "gptk"
 bottle = "EldenRing"

@@ -1,5 +1,5 @@
 fn main() {
-    // Свой базовый адрес: дефолтный 0x180000000 занят libcef.dll и др., релокация не нужна.
+    // Own image base: the default 0x180000000 is taken by libcef.dll and others, so no relocation is needed.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         println!("cargo:rustc-cdylib-link-arg=-Wl,--image-base=0x6f1000000");
     }

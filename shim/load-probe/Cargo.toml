@@ -1,6 +1,6 @@
 [package]
 name = "load-probe"
-description = "Проверка, что shim-DLL грузится внутри Wine: LoadLibrary + вызов экспорта"
+description = "Checks that a shim DLL loads inside Wine: LoadLibrary + export call"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

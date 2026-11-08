@@ -1,8 +1,8 @@
-//! `grace-bench <журнал.csv> [<журнал2.csv>] [--skip <сек>]`
-//! `grace-bench trace <файл.trace> --pid <pid>` — разбор Metal System Trace.
+//! `grace-bench <log.csv> [<log2.csv>] [--skip <sec>]`
+//! `grace-bench trace <file.trace> --pid <pid>`: Metal System Trace analysis.
 //!
-//! Один файл — отчёт. Два файла — отчёты и сравнение второго с первым.
-//! `--skip` отбрасывает первые секунды (загрузка, прогрев; по умолчанию 5 с).
+//! One file: a report. Two files: reports and a comparison of the second against the first.
+//! `--skip` drops the first seconds (loading, warm-up; 5 s by default).
 
 use std::path::PathBuf;
 
@@ -13,7 +13,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("trace") {
         let (Some(file), Some(pid)) = (args.get(1), args.iter().position(|a| a == "--pid").and_then(|i| args.get(i + 1))) else {
-            bail!("использование: grace-bench trace <файл.trace> --pid <pid>");
+            bail!("usage: grace-bench trace <file.trace> --pid <pid>");
         };
         let trace = PathBuf::from(file);
         let work = trace.with_extension("export");
@@ -32,7 +32,7 @@ fn main() -> Result<()> {
         }
     }
     if files.is_empty() || files.len() > 2 {
-        bail!("использование: grace-bench <журнал.csv> [<журнал2.csv>] [--skip <сек>]");
+        bail!("usage: grace-bench <log.csv> [<log2.csv>] [--skip <sec>]");
     }
     let name = |p: &PathBuf| p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let mut reports = Vec::new();

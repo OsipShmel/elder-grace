@@ -1,8 +1,8 @@
-//! Разбор Metal System Trace (`xctrace`): занятость GPU, загрузка CPU по потокам, вердикт.
+//! Metal System Trace (`xctrace`) analysis: GPU occupancy, per-thread CPU load, verdict.
 //!
-//! Таблицы выгружаются `xcrun xctrace export --xpath …` в XML. В нём повторяющиеся значения
-//! заменены ссылками `ref="N"` на элемент с `id="N"`, поэтому парсер хранит таблицу id.
-//! Теги колонок — это engineering-type (`start-time`, `duration`, `metal-nesting-level`, …).
+//! Tables are exported with `xcrun xctrace export --xpath …` as XML. Repeated values there are
+//! replaced by `ref="N"` references to the element with `id="N"`, so the parser keeps an id table.
+//! Column tags are engineering types (`start-time`, `duration`, `metal-nesting-level`, …).
 
 use std::collections::HashMap;
 use std::io::BufReader;
@@ -40,16 +40,16 @@ fn attrs(e: &BytesStart<'_>) -> (Option<String>, Option<String>, String) {
     (id, rf, fmt)
 }
 
-/// Вызывает `f` для каждой строки таблицы: колонка (тег) → значение (первое вхождение тега).
+/// Calls `f` for every table row: column (tag) -> value (first occurrence of the tag).
 fn for_each_row(path: &Path, mut f: impl FnMut(&HashMap<String, Info>)) -> Result<()> {
-    let file = std::fs::File::open(path).with_context(|| format!("чтение {}", path.display()))?;
+    let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
     let mut reader = Reader::from_reader(BufReader::new(file));
     let mut buf = Vec::new();
     let mut ids: HashMap<String, Info> = HashMap::new();
     let mut stack: Vec<Frame> = Vec::new();
     let mut row: Option<(usize, HashMap<String, Info>)> = None;
 
-    // Завершённый элемент: регистрируем id, поднимаем pid к родителю, кладём колонку в строку.
+    // Finished element: register its id, lift the pid to the parent, put the column into the row.
     let finish = |frame: Frame, stack: &mut Vec<Frame>, ids: &mut HashMap<String, Info>, row: &mut Option<(usize, HashMap<String, Info>)>| {
         let mut info = frame.info;
         if frame.tag == "pid" {
@@ -121,12 +121,12 @@ pub struct TraceSummary {
     pub gpu_busy_pct: f64,
     pub gpu_frames: usize,
     pub cpu_total_pct: f64,
-    /// Потоки процесса: (имя, средняя загрузка в % одного ядра), по убыванию.
+    /// Process threads: (name, average load in % of one core), descending.
     pub threads: Vec<(String, f64)>,
     pub verdict: String,
 }
 
-/// Объединение интервалов (нс) → суммарная длина.
+/// Union of intervals (ns) -> total length.
 fn union_len(mut iv: Vec<(u64, u64)>) -> u64 {
     iv.sort_unstable();
     let (mut total, mut cur): (u64, Option<(u64, u64)>) = (0, None);
@@ -153,14 +153,14 @@ fn export(trace: &Path, schema: &str, out: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Разбирает трейс для процесса `pid`. Промежуточные XML кладутся в `work`.
+/// Analyzes the trace for process `pid`. Intermediate XML goes into `work`.
 pub fn analyze(trace: &Path, pid: u32, work: &Path) -> Result<TraceSummary> {
     std::fs::create_dir_all(work)?;
     let (gpu_xml, thr_xml) = (work.join("metal-gpu-intervals.xml"), work.join("thread-cpu.xml"));
     export(trace, "metal-gpu-intervals", &gpu_xml)?;
     export(trace, "ThreadCPUUsage", &thr_xml)?;
 
-    // GPU: интервалы верхнего уровня (вложенность 0) нашего процесса, объединённые.
+    // GPU: top-level intervals (nesting 0) of our process, merged.
     let mut iv = Vec::new();
     let mut frames = std::collections::HashSet::new();
     for_each_row(&gpu_xml, |cols| {
@@ -181,11 +181,11 @@ pub fn analyze(trace: &Path, pid: u32, work: &Path) -> Result<TraceSummary> {
     })?;
     let span = match (iv.iter().map(|i| i.0).min(), iv.iter().map(|i| i.1).max()) {
         (Some(a), Some(b)) if b > a => b - a,
-        _ => bail!("в трейсе нет GPU-интервалов процесса {pid}"),
+        _ => bail!("the trace has no GPU intervals for process {pid}"),
     };
     let busy = union_len(iv);
 
-    // CPU: сэмплы по 10 мс, загрузка в % одного ядра по потокам.
+    // CPU: 10 ms samples, per-thread load in % of one core.
     let mut per: HashMap<String, f64> = HashMap::new();
     let (mut t0, mut t1) = (u64::MAX, 0u64);
     for_each_row(&thr_xml, |cols| {
@@ -207,11 +207,11 @@ pub fn analyze(trace: &Path, pid: u32, work: &Path) -> Result<TraceSummary> {
     let gpu_pct = busy as f64 / span as f64 * 100.0;
     let top = threads.first().map_or(0.0, |t| t.1);
     let verdict = if gpu_pct >= 85.0 {
-        format!("упирается в GPU: GPU занят {gpu_pct:.0}% времени")
+        format!("GPU-bound: the GPU is busy {gpu_pct:.0}% of the time")
     } else if top >= 85.0 {
-        format!("упирается в CPU: самый загруженный поток — {top:.0}% ядра, GPU занят {gpu_pct:.0}%")
+        format!("CPU-bound: the busiest thread uses {top:.0}% of a core, the GPU is busy {gpu_pct:.0}%")
     } else {
-        format!("ни GPU ({gpu_pct:.0}%), ни один поток CPU (макс. {top:.0}%) не загружены полностью — вероятно, ожидание/синхронизация (vsync, Present, подгрузка)")
+        format!("neither the GPU ({gpu_pct:.0}%) nor any CPU thread (max {top:.0}%) is fully loaded: probably waiting/synchronization (vsync, Present, streaming)")
     };
     Ok(TraceSummary {
         span_ms: span as f64 / 1e6,
@@ -226,7 +226,7 @@ pub fn analyze(trace: &Path, pid: u32, work: &Path) -> Result<TraceSummary> {
 
 pub fn format_summary(s: &TraceSummary) -> String {
     let mut out = format!(
-        "трейс {:.1} с: кадров на GPU {} (~{:.1} FPS)\n  GPU занят {:.0} мс = {:.1}%\n  CPU процесса: {:.0}% (100% = одно ядро)",
+        "trace {:.1} s: GPU frames {} (~{:.1} FPS)\n  GPU busy {:.0} ms = {:.1}%\n  process CPU: {:.0}% (100% = one core)",
         s.span_ms / 1000.0,
         s.gpu_frames,
         s.gpu_frames as f64 / (s.span_ms / 1000.0),
@@ -237,7 +237,7 @@ pub fn format_summary(s: &TraceSummary) -> String {
     for (name, pct) in s.threads.iter().take(6) {
         out += &format!("\n    {pct:5.1}%  {name}");
     }
-    out += &format!("\n  вердикт: {}", s.verdict);
+    out += &format!("\n  verdict: {}", s.verdict);
     out
 }
 
@@ -262,9 +262,9 @@ mod tests {
             r#"<trace-query-result><node><row><start-time id="1" fmt="0">100</start-time><duration id="2" fmt="x">50</duration><process id="3" fmt="game (7)"><pid id="4" fmt="7">7</pid></process></row>
 <row><start-time ref="1"/><duration ref="2"/><process ref="3"/></row></node></trace-query-result>"#,
         )
-        .expect("запись");
+        .expect("write");
         let mut rows = Vec::new();
-        for_each_row(&path, |c| rows.push((num(c, "start-time"), num(c, "duration"), c.get("process").and_then(|p| p.pid)))).expect("разбор");
+        for_each_row(&path, |c| rows.push((num(c, "start-time"), num(c, "duration"), c.get("process").and_then(|p| p.pid)))).expect("parse");
         assert_eq!(rows, vec![(Some(100.0), Some(50.0), Some(7)), (Some(100.0), Some(50.0), Some(7))]);
     }
 }

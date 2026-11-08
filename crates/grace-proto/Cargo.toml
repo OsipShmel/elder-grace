@@ -1,6 +1,6 @@
 [package]
 name = "grace-proto"
-description = "Протокол управления Elder Grace (ctl, MCP, shim): JSON построчно"
+description = "Elder Grace control protocol (ctl, MCP, shim): line-delimited JSON"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

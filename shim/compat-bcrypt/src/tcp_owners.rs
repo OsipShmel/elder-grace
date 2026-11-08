@@ -1,13 +1,13 @@
-//! Таблица TCP-соединений с PID владельца (`GetExtendedTcpTable`).
+//! TCP connection table with owner PIDs (`GetExtendedTcpTable`).
 //!
-//! Wine 7.7 на macOS отдаёт таблицу TCP пустой. Клиент Steam по ней проверяет,
-//! что websocket к нему открыл именно его `steamwebhelper` (ищет строку соединения
-//! и её `owningPid`), не находит и отвергает подключение →
-//! «Непредвиденная ошибка транспорта (0x3009)».
+//! Wine 7.7 on macOS returns an empty TCP table. The Steam client uses it to check
+//! that the websocket to it was opened by its own `steamwebhelper` (it looks for the connection row
+//! and its `owningPid`), does not find it and rejects the connection ->
+//! "Unexpected transport error (0x3009)".
 //!
-//! Реестр в общей памяти префикса: каждый процесс с нашим shim записывает свои
-//! `connect` и `listen` (адреса, порты, PID). Перехваченный `GetExtendedTcpTable`
-//! дописывает к ответу Wine строки из реестра для запрошенного класса таблицы.
+//! A registry in prefix-wide shared memory: every process with our shim records its
+//! `connect` and `listen` calls (addresses, ports, PID). The hooked `GetExtendedTcpTable`
+//! appends rows from the registry to Wine's answer for the requested table class.
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
@@ -28,13 +28,13 @@ const NO_ERROR: u32 = 0;
 
 #[repr(C)]
 struct Entry {
-    /// 0 — свободно, 1 — занято (меняется атомарно, общая память между процессами).
+    /// 0 = free, 1 = taken (changed atomically, memory shared between processes).
     used: AtomicU32,
     pid: u32,
     socket: u64,
     state: u32,
-    local_addr: u32,  // как в sockaddr_in (сетевой порядок)
-    local_port: u32,  // сетевой порядок в младших 16 битах
+    local_addr: u32,  // as in sockaddr_in (network order)
+    local_port: u32,  // network order in the low 16 bits
     remote_addr: u32,
     remote_port: u32,
 }
@@ -62,7 +62,7 @@ fn table() -> Option<&'static Table> {
     static TABLE: OnceLock<usize> = OnceLock::new();
     let addr = *TABLE.get_or_init(|| {
         let name: Vec<u16> = "Local\\ElderGraceTcpOwners".encode_utf16().chain(std::iter::once(0)).collect();
-        // SAFETY: анонимное (страничный файл) именованное отображение нужного размера.
+        // SAFETY: an anonymous (page-file backed) named mapping of the right size.
         unsafe {
             let map = CreateFileMappingW((-1isize) as *mut c_void, std::ptr::null_mut(), 0x04, 0, size_of::<Table>() as u32, name.as_ptr());
             if map.is_null() {
@@ -73,25 +73,25 @@ fn table() -> Option<&'static Table> {
                 return 0;
             }
             let t = &mut *view.cast::<Table>();
-            // Новое отображение заполнено нулями; magic ставит первый процесс.
+            // A new mapping is zero-filled; the first process sets the magic.
             if t.magic != MAGIC {
                 t.magic = MAGIC;
             }
             view as usize
         }
     });
-    // SAFETY: адрес живого отображения на всё время жизни процесса.
+    // SAFETY: the address of a live mapping for the whole process lifetime.
     (addr != 0).then(|| unsafe { &*(addr as *const Table) })
 }
 
 fn record(socket: Socket, state: u32, local: (u32, u32), remote: (u32, u32)) {
     let Some(t) = table() else { return };
-    // SAFETY: без аргументов.
+    // SAFETY: no arguments.
     let pid = unsafe { GetCurrentProcessId() };
     for e in &t.entries {
         if e.used.compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-            // Слот захвачен (2 = заполняется), пишем поля и публикуем.
-            // SAFETY: слот принадлежит нам, пока used == 2; другие читатели его пропускают.
+            // Slot taken (2 = being filled): write the fields and publish.
+            // SAFETY: the slot is ours while used == 2; other readers skip it.
             unsafe {
                 let p = std::ptr::from_ref(e).cast_mut();
                 (*p).pid = pid;
@@ -110,7 +110,7 @@ fn record(socket: Socket, state: u32, local: (u32, u32), remote: (u32, u32)) {
 
 fn forget(socket: Socket) {
     let Some(t) = table() else { return };
-    // SAFETY: без аргументов.
+    // SAFETY: no arguments.
     let pid = unsafe { GetCurrentProcessId() };
     for e in &t.entries {
         if e.used.load(Ordering::Acquire) == 1 && e.pid == pid && e.socket == socket as u64 {
@@ -120,7 +120,7 @@ fn forget(socket: Socket) {
 }
 
 fn alive(pid: u32) -> bool {
-    // SAFETY: OpenProcess с минимальными правами; хендл сразу закрываем.
+    // SAFETY: OpenProcess with minimal rights; the handle is closed right away.
     unsafe {
         let h = OpenProcess(0x1000, 0, pid); // PROCESS_QUERY_LIMITED_INFORMATION
         if h.is_null() {
@@ -131,7 +131,7 @@ fn alive(pid: u32) -> bool {
     true
 }
 
-/// (адрес, порт) из sockaddr_in. Только IPv4.
+/// (address, port) from a sockaddr_in. IPv4 only.
 fn sockaddr_v4(sa: &[u8; 32]) -> Option<(u32, u32)> {
     if u16::from_le_bytes([sa[0], sa[1]]) != AF_INET as u16 {
         return None;
@@ -141,7 +141,7 @@ fn sockaddr_v4(sa: &[u8; 32]) -> Option<(u32, u32)> {
     Some((addr, port))
 }
 
-// --- настоящие функции ws2_32 / iphlpapi ---------------------------------------------------
+// --- real ws2_32 / iphlpapi functions -----------------------------------------------------
 
 static REAL_CONNECT: AtomicUsize = AtomicUsize::new(0);
 static REAL_LISTEN: AtomicUsize = AtomicUsize::new(0);
@@ -156,7 +156,7 @@ type GetTcpTable = unsafe extern "system" fn(*mut u8, *mut u32, i32, u32, u32, u
 fn local_of(s: Socket) -> Option<(u32, u32)> {
     let mut sa = [0u8; 32];
     let mut len = sa.len() as i32;
-    // SAFETY: настоящий getsockname записан при установке.
+    // SAFETY: the real getsockname was stored at install time.
     let real: GetSockName = unsafe { std::mem::transmute(REAL_GETSOCKNAME.load(Ordering::Acquire)) };
     let err = unsafe { WSAGetLastError() };
     let r = unsafe { real(s, sa.as_mut_ptr(), &mut len) };
@@ -165,14 +165,14 @@ fn local_of(s: Socket) -> Option<(u32, u32)> {
 }
 
 unsafe extern "system" fn hooked_connect(s: Socket, name: *const u8, len: i32) -> i32 {
-    // SAFETY: настоящий connect записан при установке.
+    // SAFETY: the real connect was stored at install time.
     let real: Connect = unsafe { std::mem::transmute(REAL_CONNECT.load(Ordering::Acquire)) };
     let r = unsafe { real(s, name, len) };
     let err = unsafe { WSAGetLastError() };
-    // Неблокирующий connect возвращает WSAEWOULDBLOCK (10035) — соединение уже идёт.
+    // A non-blocking connect returns WSAEWOULDBLOCK (10035): the connection is already in progress.
     if (r == 0 || err == 10035) && !name.is_null() && len >= 16 {
         let mut sa = [0u8; 32];
-        // SAFETY: name указывает минимум на 16 байт sockaddr_in.
+        // SAFETY: name points to at least 16 bytes of sockaddr_in.
         unsafe { std::ptr::copy_nonoverlapping(name, sa.as_mut_ptr(), 16) };
         if let (Some(remote), Some(local)) = (sockaddr_v4(&sa), local_of(s)) {
             forget(s);
@@ -184,7 +184,7 @@ unsafe extern "system" fn hooked_connect(s: Socket, name: *const u8, len: i32) -
 }
 
 unsafe extern "system" fn hooked_listen(s: Socket, backlog: i32) -> i32 {
-    // SAFETY: настоящий listen записан при установке.
+    // SAFETY: the real listen was stored at install time.
     let real: Listen = unsafe { std::mem::transmute(REAL_LISTEN.load(Ordering::Acquire)) };
     let r = unsafe { real(s, backlog) };
     if r == 0 {
@@ -198,16 +198,16 @@ unsafe extern "system" fn hooked_listen(s: Socket, backlog: i32) -> i32 {
     r
 }
 
-/// Вызывается из closesocket-обёртки winsock.rs.
+/// Called from the closesocket wrapper in winsock.rs.
 pub fn on_close(s: Socket) {
     forget(s);
 }
 
-/// GetExtendedTcpTable: ответ Wine + строки из реестра (IPv4, классы с PID владельца).
+/// GetExtendedTcpTable: Wine's answer + rows from the registry (IPv4, classes with owner PIDs).
 unsafe extern "system" fn hooked_tcp_table(buf: *mut u8, size: *mut u32, order: i32, af: u32, class: u32, reserved: u32) -> u32 {
-    // SAFETY: настоящая функция записана при установке.
+    // SAFETY: the real function was stored at install time.
     let real: GetTcpTable = unsafe { std::mem::transmute(REAL_TCP_TABLE.load(Ordering::Acquire)) };
-    // Классы 3/4/5: OWNER_PID_LISTENER / CONNECTIONS / ALL. Остальное не трогаем.
+    // Classes 3/4/5: OWNER_PID_LISTENER / CONNECTIONS / ALL. The rest is left alone.
     if af != AF_INET || !(3..=5).contains(&class) || size.is_null() {
         return unsafe { real(buf, size, order, af, class, reserved) };
     }
@@ -227,7 +227,7 @@ unsafe extern "system" fn hooked_tcp_table(buf: *mut u8, size: *mut u32, order: 
         })
         .unwrap_or_default();
 
-    // Сначала узнаём, сколько строк у Wine.
+    // First find out how many rows Wine has.
     let mut wine_size = 0u32;
     unsafe { real(std::ptr::null_mut(), &mut wine_size, order, af, class, reserved) };
     let mut wine = vec![0u8; (wine_size as usize).max(4)];
@@ -237,13 +237,13 @@ unsafe extern "system" fn hooked_tcp_table(buf: *mut u8, size: *mut u32, order: 
 
     let total = wine_rows + extra.len();
     let need = (4 + total * 24) as u32;
-    // SAFETY: size проверен на null.
+    // SAFETY: size was checked for null.
     let have = unsafe { *size };
     unsafe { *size = need };
     if buf.is_null() || have < need {
         return ERROR_INSUFFICIENT_BUFFER;
     }
-    // SAFETY: буфер вызывающего не меньше need байт.
+    // SAFETY: the caller's buffer is at least need bytes.
     unsafe {
         std::ptr::write_unaligned(buf.cast::<u32>(), total as u32);
         if wine_rows > 0 {
@@ -258,14 +258,14 @@ unsafe extern "system" fn hooked_tcp_table(buf: *mut u8, size: *mut u32, order: 
     }
     static LOGGED: AtomicU32 = AtomicU32::new(0);
     if LOGGED.fetch_add(1, Ordering::Relaxed) < 3 {
-        debug(&format!("GetExtendedTcpTable(class {class}): Wine {wine_rows} строк + реестр {}", extra.len()));
+        debug(&format!("GetExtendedTcpTable(class {class}): Wine {wine_rows} rows + registry {}", extra.len()));
     }
     NO_ERROR
 }
 
 pub fn install() {
     let _ = table();
-    // SAFETY: системные DLL Wine; имена нуль-терминированы.
+    // SAFETY: Wine system DLLs; names are null-terminated.
     let ws2 = unsafe { LoadLibraryA(c"ws2_32.dll".as_ptr().cast()) };
     let ip = unsafe { LoadLibraryA(c"iphlpapi.dll".as_ptr().cast()) };
     if ws2.is_null() || ip.is_null() {
@@ -281,12 +281,12 @@ pub fn install() {
     REAL_GETSOCKNAME.store(gsn, Ordering::Release);
     REAL_TCP_TABLE.store(tcp, Ordering::Release);
 
-    // Ординалы ws2_32: connect = 4, listen = 13. Импорт бывает и по имени — патчим оба вида.
+    // ws2_32 ordinals: connect = 4, listen = 13. Imports also come by name, so both kinds are patched.
     for (import, hook, label) in [
-        (Import::Ordinal(4), hooked_connect as *const () as usize, "tcp-реестр connect"),
-        (Import::Name(b"connect"), hooked_connect as *const () as usize, "tcp-реестр connect"),
-        (Import::Ordinal(13), hooked_listen as *const () as usize, "tcp-реестр listen"),
-        (Import::Name(b"listen"), hooked_listen as *const () as usize, "tcp-реестр listen"),
+        (Import::Ordinal(4), hooked_connect as *const () as usize, "tcp registry connect"),
+        (Import::Name(b"connect"), hooked_connect as *const () as usize, "tcp registry connect"),
+        (Import::Ordinal(13), hooked_listen as *const () as usize, "tcp registry listen"),
+        (Import::Name(b"listen"), hooked_listen as *const () as usize, "tcp registry listen"),
     ] {
         iat::register(Patch { target: "*", from: Some("ws2_32.dll"), import, hook, label });
     }
@@ -295,6 +295,6 @@ pub fn install() {
         from: Some("iphlpapi.dll"),
         import: Import::Name(b"GetExtendedTcpTable"),
         hook: hooked_tcp_table as *const () as usize,
-        label: "tcp-реестр GetExtendedTcpTable",
+        label: "tcp registry GetExtendedTcpTable",
     });
 }

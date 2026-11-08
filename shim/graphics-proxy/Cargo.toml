@@ -1,6 +1,6 @@
 [package]
 name = "graphics-proxy"
-description = "Shim Elder Grace внутри Wine: прокси d3d12.dll — проброс в D3DMetal, перехват создания пайплайнов, дамп шейдеров"
+description = "Elder Grace in-Wine shim: d3d12.dll proxy - forwards to D3DMetal, hooks pipeline creation, dumps shaders, live overrides"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

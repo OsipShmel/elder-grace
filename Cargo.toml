@@ -17,7 +17,7 @@ members = [
     "tools/grace-irconv",
     "xtask",
 ]
-# shim собирается только под Windows: `cargo build -p graphics-proxy --target x86_64-pc-windows-gnu`
+# Shims build only for Windows: `cargo build -p graphics-proxy --target x86_64-pc-windows-gnu`
 default-members = [
     "crates/grace-core",
     "crates/grace-proto",

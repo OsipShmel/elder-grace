@@ -1,12 +1,12 @@
-// Простой меш: позиции и нормали в отдельных буферах, ламберт + полусферный свет.
+// Simple mesh: positions and normals in separate buffers, Lambert + hemispherical light.
 #include <metal_stdlib>
 using namespace metal;
 
 struct Uniforms {
     float4x4 view_proj;
-    float4 light;   // xyz — направление на свет (мировые координаты)
-    float4 color;   // цвет меша без текстуры (линейный)
-    float4 params;  // x = 1, если есть текстура
+    float4 light;   // xyz = direction towards the light (world space)
+    float4 color;   // mesh color without a texture (linear)
+    float4 params;  // x = 1 if there is a texture
 };
 
 struct VOut {
@@ -39,7 +39,7 @@ fragment float4 grace_mesh_fs(VOut in [[stage_in]],
     float4 base = u.color;
     if (u.params.x > 0.5) {
         base = albedo.sample(smp, in.uv);
-        if (base.a < 0.5) discard_fragment();   // листва, решётки — альфа-тест
+        if (base.a < 0.5) discard_fragment();   // foliage, grates: alpha test
     }
     float direct = max(dot(n, normalize(u.light.xyz)), 0.0);
     float sky = 0.5 + 0.5 * n.y;

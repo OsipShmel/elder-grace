@@ -1,6 +1,6 @@
-// Сгенерировано по списку экспортов bcrypt.dll из Wine (GPTK 3.0-3), 61 функция.
-// Каждая функция — naked-трамплин: jmp на адрес из таблицы REAL (заполняется в DllMain).
-// Для функций с BCRYPT_ALG_HANDLE первым аргументом трамплин сначала переводит псевдо-хендл.
+// Generated from the bcrypt.dll export list of Wine (GPTK 3.0-3), 61 functions.
+// Every function is a naked trampoline: jmp to an address from the REAL table (filled in DllMain).
+// For functions with a BCRYPT_ALG_HANDLE first argument the trampoline translates the pseudo-handle first.
 
 pub const NAMES: [&str; 61] = [
     "BCryptAddContextFunction",

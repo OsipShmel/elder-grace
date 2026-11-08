@@ -1,5 +1,5 @@
-//! Нативный рендер Elder Grace (Metal, arm64). Не знает об играх: на вход — меши в мировых
-//! координатах, на выход — окно с орбитальной камерой или PNG-кадр.
+//! Elder Grace native renderer (Metal, arm64). Knows nothing about games: input is meshes in world
+//! space, output is a window with an orbit camera or a PNG frame.
 
 pub mod dds;
 pub mod gpu;
@@ -10,21 +10,21 @@ pub mod viewer;
 pub use dds::TextureData;
 pub use gpu::{Gpu, GpuScene};
 
-/// Меш в мировых координатах: треугольники списком.
+/// Mesh in world space: a triangle list.
 #[derive(Debug, Clone, Default)]
 pub struct MeshData {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
-    /// UV на вершину (может быть пустым — тогда без текстуры).
+    /// Per-vertex UVs (may be empty: then no texture).
     pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
-    /// Цвет без текстуры (линейный); `None` — из палитры по номеру меша.
+    /// Color without a texture (linear); `None` picks from the palette by mesh index.
     pub color: Option<[f32; 4]>,
-    /// Индекс в `Scene::textures` — альбедо.
+    /// Index into `Scene::textures`: albedo.
     pub texture: Option<usize>,
 }
 
-/// Экземпляр меша: матрица «модель → мир» (по столбцам).
+/// Mesh instance: a model-to-world matrix (column-major).
 #[derive(Debug, Clone, Copy)]
 pub struct Instance {
     pub mesh: usize,
@@ -35,12 +35,12 @@ pub struct Instance {
 pub struct Scene {
     pub meshes: Vec<MeshData>,
     pub textures: Vec<TextureData>,
-    /// Пусто — каждый меш рисуется один раз как есть.
+    /// Empty: every mesh is drawn once as is.
     pub instances: Vec<Instance>,
 }
 
 impl Scene {
-    /// Границы всех вершин в мире (с учётом экземпляров): (min, max).
+    /// Bounds of all vertices in world space (instances included): (min, max).
     pub fn bounds(&self) -> ([f32; 3], [f32; 3]) {
         let mut lo = [f32::MAX; 3];
         let mut hi = [f32::MIN; 3];
@@ -53,7 +53,7 @@ impl Scene {
         if self.instances.is_empty() {
             self.meshes.iter().flat_map(|m| &m.positions).for_each(|&p| add(p));
         } else {
-            // Углы bbox каждого меша, перенесённые экземпляром, — быстро и с запасом.
+            // Bbox corners of each mesh transformed by the instance: fast and conservative.
             let local: Vec<Option<([f32; 3], [f32; 3])>> = self.meshes.iter().map(|m| mesh_bounds(&m.positions)).collect();
             for inst in &self.instances {
                 let Some(Some((a, b))) = local.get(inst.mesh) else { continue };
@@ -81,12 +81,12 @@ fn mesh_bounds(p: &[[f32; 3]]) -> Option<([f32; 3], [f32; 3])> {
     Some(p.iter().fold((first, first), |(lo, hi), v| (std::array::from_fn(|a| lo[a].min(v[a])), std::array::from_fn(|a| hi[a].max(v[a])))))
 }
 
-/// Орбитальная камера вокруг цели.
+/// Orbit camera around a target.
 #[derive(Debug, Clone, Copy)]
 pub struct Camera {
     pub target: [f32; 3],
     pub distance: f32,
-    /// Поворот вокруг вертикали и наклон, радианы.
+    /// Rotation around the vertical axis and pitch, radians.
     pub yaw: f32,
     pub pitch: f32,
     pub fovy: f32,
@@ -95,7 +95,7 @@ pub struct Camera {
 }
 
 impl Camera {
-    /// Камера, в кадр которой целиком попадают границы сцены.
+    /// Camera whose frame fully contains the scene bounds.
     pub fn framing(lo: [f32; 3], hi: [f32; 3]) -> Self {
         let target = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0];
         let d = math::sub(hi, lo);
@@ -110,12 +110,12 @@ impl Camera {
 
     pub fn view_proj(&self, aspect: f32) -> math::Mat4 {
         let far = self.far.max(self.distance * 4.0);
-        // Ближняя плоскость — от расстояния до цели: и обзор сцены сверху, и шаг вплотную к стене.
+        // Near plane depends on the distance to the target: works both for a scene overview and right next to a wall.
         let near = (self.distance * 0.01).clamp(0.02, self.near.max(0.02));
         math::mul(&math::perspective(self.fovy, aspect, near, far), &math::look_at(self.eye(), self.target, [0.0, 1.0, 0.0]))
     }
 
-    /// Камера из положения глаза и направления взгляда (мир просмотра, правая СК).
+    /// Camera from an eye position and a view direction (viewer world, right-handed).
     pub fn looking(eye: [f32; 3], forward: [f32; 3], fovy: f32) -> Self {
         let f = math::normalize(forward);
         let distance = 1.0;
@@ -126,10 +126,10 @@ impl Camera {
         Self { target, distance, yaw, pitch, fovy, near: 0.05, far: 5000.0 }
     }
 
-    /// Сдвиг цели в осях камеры: вперёд (по горизонтали), вправо, вверх.
+    /// Moves the target along the camera axes: forward (horizontal), right, up.
     pub fn fly(&mut self, forward: f32, right: f32, up: f32) {
         let (sy, cy) = self.yaw.sin_cos();
-        // Взгляд — от глаза к цели, т.е. против направления (sin yaw, cos yaw).
+        // The view goes from the eye to the target, i.e. against the (sin yaw, cos yaw) direction.
         let f = [-sy, 0.0, -cy];
         let r = [cy, 0.0, -sy];
         for a in 0..3 {

@@ -1,16 +1,16 @@
-# Всё локальное и игровое: данные игр, песочницы, кэш, захваты, трейсы, дампы шейдеров
+# Everything local or game-derived: game data, sandboxes, caches, captures, traces, shader dumps
 .local/
 cache/
 captures/
 traces/
 config/local.toml
 
-# Сборка
+# Build
 target/
 build/
 *.app/
 
-# Инструменты Apple
+# Apple tools
 *.gputrace
 *.trace
 xcuserdata/

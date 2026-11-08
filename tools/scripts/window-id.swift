@@ -1,5 +1,5 @@
-// Номер окна по подстроке заголовка (для `screencapture -l`): xcrun swift window-id.swift "ELDEN RING"
-// Печатает первый найденный номер окна, у которого заголовок содержит аргумент.
+// Window number by title substring (for `screencapture -l`): xcrun swift window-id.swift "ELDEN RING"
+// Prints the number of the first window whose title contains the argument.
 import CoreGraphics
 let needle = CommandLine.arguments.dropFirst().first ?? ""
 let list = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as! [[String: Any]]

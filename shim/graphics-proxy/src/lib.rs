@@ -1,16 +1,16 @@
-//! Shim Elder Grace внутри игры: прокси `d3d12.dll`.
+//! Elder Grace in-game shim: a `d3d12.dll` proxy.
 //!
-//! Кладётся в песочницу игры как `d3d12.dll` (override `d3d12=native,builtin`),
-//! исполняется под Rosetta внутри процесса игры, поэтому держим его тонким.
+//! Goes into the game sandbox as `d3d12.dll` (override `d3d12=native,builtin`)
+//! and runs under Rosetta inside the game process, so it is kept thin.
 //!
-//! - Все экспорты настоящего `d3d12.dll` (D3DMetal из GPTK) — naked-трамплины,
-//!   ординалы как у Windows (см. build.rs): игры импортируют `D3D12CreateDevice` по №101.
-//! - `D3D12CreateDevice` после успеха патчит vtable устройства: `CreateGraphicsPipelineState`,
-//!   `CreateComputePipelineState`, `CreatePipelineState` (поток подобъектов, ID3D12Device2).
-//! - Каждый шейдер пайплайна пишется в каталог `GRACE_SHADER_DUMP` как
-//!   `<fnv64>.<стадия>.dxbc` (без повторов); сводка — в `_stats.txt` там же.
-//! - Подмены шейдеров (`overrides.rs`) включаются и выключаются на лету (`live.rs`):
-//!   командным спискам подставляется своя vtable, управление по TCP 47322.
+//! - All exports of the real `d3d12.dll` (D3DMetal from GPTK) are naked trampolines
+//!   with Windows ordinals (see build.rs): games import `D3D12CreateDevice` by #101.
+//! - After a successful `D3D12CreateDevice` the device vtable is patched: `CreateGraphicsPipelineState`,
+//!   `CreateComputePipelineState`, `CreatePipelineState` (subobject stream, ID3D12Device2).
+//! - Every pipeline shader is written to the `GRACE_SHADER_DUMP` directory as
+//!   `<fnv64>.<stage>.dxbc` (no duplicates); a summary goes to `_stats.txt` there.
+//! - Shader overrides (`overrides.rs`) are switched on and off live (`live.rs`):
+//!   command lists get our own vtable, controlled over TCP 47322.
 
 #![cfg(all(windows, target_arch = "x86_64"))]
 #![allow(non_snake_case, clippy::missing_safety_doc)]
@@ -25,7 +25,7 @@ mod overrides;
 mod recipes;
 mod resources;
 
-/// Версия протокола shim ↔ рантайм (совпадает с `grace_proto::PROTOCOL_VERSION`).
+/// shim <-> runtime protocol version (same as `grace_proto::PROTOCOL_VERSION`).
 pub const SHIM_PROTOCOL_VERSION: u32 = 1;
 
 #[unsafe(no_mangle)]
@@ -33,7 +33,7 @@ pub extern "C" fn grace_shim_version() -> u32 {
     SHIM_PROTOCOL_VERSION
 }
 
-// ---- проброс экспортов ------------------------------------------------------------------
+// ---- export forwarding --------------------------------------------------------------------
 
 const NAMES: [&str; 11] = [
     "GetBehaviorValue",
@@ -89,29 +89,29 @@ pub(crate) fn debug(msg: &str) {
     s.extend_from_slice(b"[grace d3d12] ");
     s.extend_from_slice(msg.as_bytes());
     s.extend_from_slice(b"\n\0");
-    // SAFETY: строка нуль-терминирована.
+    // SAFETY: the string is null-terminated.
     unsafe { OutputDebugStringA(s.as_ptr()) };
 }
 
 fn resolve_real() {
     let mut dir = [0u16; 260];
-    // SAFETY: буфер на 260 u16.
+    // SAFETY: the buffer holds 260 u16.
     let len = unsafe { GetSystemDirectoryW(dir.as_mut_ptr(), dir.len() as u32) } as usize;
     let mut path: Vec<u16> = dir[..len.min(dir.len())].to_vec();
     path.extend("\\d3d12.dll\0".encode_utf16());
-    // SAFETY: путь нуль-терминирован; это builtin d3d12 (D3DMetal), полный путь отличается от нашего.
+    // SAFETY: the path is null-terminated; this is the builtin d3d12 (D3DMetal), its full path differs from ours.
     let real = unsafe { LoadLibraryW(path.as_ptr()) };
     let mut found = 0;
     for (slot, name) in REAL.iter().zip(NAMES) {
         let cname: Vec<u8> = name.bytes().chain(std::iter::once(0)).collect();
-        // SAFETY: модуль загружен (или null — тогда GetProcAddress вернёт null).
+        // SAFETY: the module is loaded (or null, then GetProcAddress returns null).
         let addr = if real.is_null() { std::ptr::null_mut() } else { unsafe { GetProcAddress(real, cname.as_ptr()) } };
         if !addr.is_null() {
             found += 1;
         }
         slot.store(addr as usize, Ordering::Release);
     }
-    debug(&format!("загружен поверх системного d3d12.dll, функций {found}/{}", NAMES.len()));
+    debug(&format!("loaded on top of the system d3d12.dll, functions {found}/{}", NAMES.len()));
 }
 
 #[unsafe(no_mangle)]
@@ -122,15 +122,15 @@ pub extern "system" fn DllMain(_m: *mut c_void, reason: u32, _r: *mut c_void) ->
     1
 }
 
-// ---- D3D12CreateDevice и vtable устройства ------------------------------------------------
+// ---- D3D12CreateDevice and the device vtable -----------------------------------------------
 
 type CreateDevice = unsafe extern "system" fn(*mut c_void, u32, *const [u8; 16], *mut *mut c_void) -> i32;
 type CreatePso = unsafe extern "system" fn(*mut c_void, *const u8, *const [u8; 16], *mut *mut c_void) -> i32;
 type QueryInterface = unsafe extern "system" fn(*mut c_void, *const [u8; 16], *mut *mut c_void) -> i32;
 type Release = unsafe extern "system" fn(*mut c_void) -> u32;
 
-// Слоты vtable ID3D12Device*: IUnknown(0–2), ID3D12Object(3–6), ID3D12Device(7–43),
-// ID3D12Device1(44–46), ID3D12Device2::CreatePipelineState — 47.
+// ID3D12Device* vtable slots: IUnknown(0-2), ID3D12Object(3-6), ID3D12Device(7-43),
+// ID3D12Device1(44-46), ID3D12Device2::CreatePipelineState = 47.
 const SLOT_GRAPHICS: usize = 10;
 const SLOT_COMPUTE: usize = 11;
 const SLOT_STREAM: usize = 47;
@@ -164,11 +164,11 @@ unsafe extern "system" fn hooked_create_list(
     out: *mut *mut c_void,
 ) -> i32 {
     type F = unsafe extern "system" fn(*mut c_void, u32, u32, *mut c_void, *mut c_void, *const [u8; 16], *mut *mut c_void) -> i32;
-    // SAFETY: оригинал записан при установке хука.
+    // SAFETY: the original was stored when the hook was installed.
     let orig: F = unsafe { std::mem::transmute(ORIG_CREATE_LIST.load(Ordering::Acquire)) };
     let hr = unsafe { orig(this, node_mask, ty, allocator, live::initial_pso(initial), riid, out) };
     if hr >= 0 && !out.is_null() {
-        // SAFETY: при успехе *out — командный список.
+        // SAFETY: on success *out is a command list.
         unsafe { live::adopt_command_list(*out) };
     }
     hr
@@ -176,25 +176,25 @@ unsafe extern "system" fn hooked_create_list(
 
 unsafe extern "system" fn hooked_create_list1(this: *mut c_void, node_mask: u32, ty: u32, flags: u32, riid: *const [u8; 16], out: *mut *mut c_void) -> i32 {
     type F = unsafe extern "system" fn(*mut c_void, u32, u32, u32, *const [u8; 16], *mut *mut c_void) -> i32;
-    // SAFETY: оригинал записан при установке хука.
+    // SAFETY: the original was stored when the hook was installed.
     let orig: F = unsafe { std::mem::transmute(ORIG_CREATE_LIST1.load(Ordering::Acquire)) };
     let hr = unsafe { orig(this, node_mask, ty, flags, riid, out) };
     if hr >= 0 && !out.is_null() {
-        // SAFETY: при успехе *out — командный список.
+        // SAFETY: on success *out is a command list.
         unsafe { live::adopt_command_list(*out) };
     }
     hr
 }
 
-/// Создаёт подменённый PSO вторым и регистрирует пару с оригиналом, который уже у игры.
+/// Creates the override PSO second and registers it as a pair with the original the game already has.
 ///
 /// # Safety
-/// `out` — выходной указатель успешного вызова создания PSO, `create` создаёт подменённый.
+/// `out` is the output pointer of a successful PSO creation call; `create` creates the override.
 unsafe fn make_pair(out: *mut *mut c_void, create: impl FnOnce(*mut *mut c_void) -> i32) {
     if out.is_null() {
         return;
     }
-    // SAFETY: вызывающий передал out успешного вызова.
+    // SAFETY: the caller passed the out pointer of a successful call.
     let orig = unsafe { *out };
     let mut over = std::ptr::null_mut();
     let hr = create(&mut over);
@@ -202,27 +202,27 @@ unsafe fn make_pair(out: *mut *mut c_void, create: impl FnOnce(*mut *mut c_void)
         live::set_pair(orig as usize, Some(over as usize));
     } else {
         live::note_failed();
-        debug(&format!("подменённый PSO не создан ({hr:#x}), игра работает с оригиналом"));
+        debug(&format!("override PSO not created ({hr:#x}), the game keeps the original"));
     }
 }
 
-/// Диагностика: какие интерфейсы игра просит у устройства и тот же ли объект ей отдают.
+/// Diagnostics: which interfaces the game asks the device for and whether it gets the same object.
 unsafe extern "system" fn hooked_qi(this: *mut c_void, riid: *const [u8; 16], out: *mut *mut c_void) -> i32 {
-    // SAFETY: оригинал записан при установке хука.
+    // SAFETY: the original was stored when the hook was installed.
     let orig: QueryInterface = unsafe { std::mem::transmute(ORIG_QI.load(Ordering::Acquire)) };
     let hr = unsafe { orig(this, riid, out) };
     if hr >= 0 && !out.is_null() {
-        // SAFETY: при успехе *out — COM-объект.
+        // SAFETY: on success *out is a COM object.
         unsafe { adopt(*out) };
     }
     static N: AtomicU64 = AtomicU64::new(0);
     if N.fetch_add(1, Ordering::Relaxed) < 40 && !riid.is_null() && !out.is_null() {
-        // SAFETY: riid — 16 байт GUID, *out валиден при успехе.
+        // SAFETY: riid is a 16-byte GUID, *out is valid on success.
         let g = unsafe { *riid };
         let same = hr >= 0 && unsafe { *out } == this;
         let vt_same = hr >= 0 && unsafe { !(*out).is_null() && *(*out as *const usize) == *(this as *const usize) };
         debug(&format!(
-            "QueryInterface {{{:02x}{:02x}{:02x}{:02x}-…}} → {hr:#x}, тот же объект: {same}, та же vtable: {vt_same}",
+            "QueryInterface {{{:02x}{:02x}{:02x}{:02x}-…}} -> {hr:#x}, same object: {same}, same vtable: {vt_same}",
             g[3], g[2], g[1], g[0]
         ));
     }
@@ -231,19 +231,19 @@ unsafe extern "system" fn hooked_qi(this: *mut c_void, riid: *const [u8; 16], ou
 
 unsafe extern "system" fn hooked_library(this: *mut c_void, blob: *const u8, len: usize, riid: *const [u8; 16], out: *mut *mut c_void) -> i32 {
     type F = unsafe extern "system" fn(*mut c_void, *const u8, usize, *const [u8; 16], *mut *mut c_void) -> i32;
-    // SAFETY: оригинал записан при установке хука.
+    // SAFETY: the original was stored when the hook was installed.
     let orig: F = unsafe { std::mem::transmute(ORIG_LIBRARY.load(Ordering::Acquire)) };
     let hr = unsafe { orig(this, blob, len, riid, out) };
-    debug(&format!("CreatePipelineLibrary(кэш {len} байт) → {hr:#x}"));
+    debug(&format!("CreatePipelineLibrary(cache {len} bytes) -> {hr:#x}"));
     if hr >= 0 && !out.is_null() {
-        // SAFETY: при успехе *out — объект ID3D12PipelineLibrary.
+        // SAFETY: on success *out is an ID3D12PipelineLibrary object.
         unsafe { hook_library(*out) };
     }
     hr
 }
 
-// ---- ID3D12PipelineLibrary: игра грузит большую часть PSO из своего кэша ---------------------
-// Слоты: IUnknown(0–2), ID3D12Object(3–6), GetDevice(7), StorePipeline(8),
+// ---- ID3D12PipelineLibrary: the game loads most PSOs from its own cache -----------------------
+// Slots: IUnknown(0-2), ID3D12Object(3-6), GetDevice(7), StorePipeline(8),
 // LoadGraphicsPipeline(9), LoadComputePipeline(10), GetSerializedSize(11), Serialize(12),
 // ID3D12PipelineLibrary1::LoadPipeline(13).
 const LIB_SLOTS: usize = 16;
@@ -265,9 +265,9 @@ unsafe fn hook_library(lib: *mut c_void) {
     if lib.is_null() {
         return;
     }
-    // SAFETY: первое поле COM-объекта — указатель на vtable.
+    // SAFETY: the first field of a COM object is the vtable pointer.
     let vtbl = unsafe { *(lib as *const *const usize) };
-    // Все библиотеки делят одну vtable: копию делаем один раз, дальше только подставляем.
+    // All libraries share one vtable: copy it once, then only substitute.
     if LIB_ORIG_VTBL.load(Ordering::Acquire) == 0 {
         let qi: QueryInterface = unsafe { std::mem::transmute(*vtbl) };
         let release: Release = unsafe { std::mem::transmute(*vtbl.add(2)) };
@@ -278,7 +278,7 @@ unsafe fn hook_library(lib: *mut c_void) {
             unsafe { release(l1) };
         }
         let mut clone: Box<[usize; LIB_SLOTS]> = Box::new([0; LIB_SLOTS]);
-        // SAFETY: читаем LIB_SLOTS указателей vtable (константные данные фреймворка).
+        // SAFETY: reads LIB_SLOTS vtable pointers (constant framework data).
         unsafe { std::ptr::copy_nonoverlapping(vtbl, clone.as_mut_ptr(), LIB_SLOTS) };
         ORIG_LIB_GRAPHICS.store(clone[LIB_LOAD_GRAPHICS], Ordering::Release);
         ORIG_LIB_COMPUTE.store(clone[LIB_LOAD_COMPUTE], Ordering::Release);
@@ -291,10 +291,10 @@ unsafe fn hook_library(lib: *mut c_void) {
         let clone = Box::leak(clone);
         LIB_CLONED_VTBL.store(clone.as_ptr() as usize, Ordering::Release);
         LIB_ORIG_VTBL.store(vtbl as usize, Ordering::Release);
-        debug(&format!("библиотеке пайплайнов подставлена своя vtable (LoadPipeline: {})", if has_stream { "да" } else { "нет" }));
+        debug(&format!("pipeline library got our vtable (LoadPipeline: {})", if has_stream { "yes" } else { "no" }));
     }
     if vtbl as usize == LIB_ORIG_VTBL.load(Ordering::Acquire) {
-        // SAFETY: объект в куче, писать в его первое поле можно.
+        // SAFETY: the object is on the heap, its first field is writable.
         unsafe { std::ptr::write_volatile(lib as *mut usize, LIB_CLONED_VTBL.load(Ordering::Acquire)) };
     }
 }
@@ -302,7 +302,7 @@ unsafe fn hook_library(lib: *mut c_void) {
 unsafe extern "system" fn hooked_lib_graphics(this: *mut c_void, name: *const u16, desc: *const u8, riid: *const [u8; 16], out: *mut *mut c_void) -> i32 {
     if !desc.is_null() {
         for (i, stage) in ["vs", "ps", "ds", "hs", "gs"].iter().enumerate() {
-            // SAFETY: тот же D3D12_GRAPHICS_PIPELINE_STATE_DESC, что у CreateGraphicsPipelineState.
+            // SAFETY: the same D3D12_GRAPHICS_PIPELINE_STATE_DESC as for CreateGraphicsPipelineState.
             unsafe { dump_bytecode(stage, desc.add(8 + i * 16)) };
         }
         note_pipeline(Kind::Library);
@@ -310,11 +310,11 @@ unsafe extern "system" fn hooked_lib_graphics(this: *mut c_void, name: *const u1
             return library_miss(out);
         }
     }
-    // SAFETY: оригинал записан при подстановке vtable.
+    // SAFETY: the original was stored when the vtable was substituted.
     let orig: LibLoad = unsafe { std::mem::transmute(ORIG_LIB_GRAPHICS.load(Ordering::Acquire)) };
     let hr = unsafe { orig(this, name, desc, riid, out) };
     if hr >= 0 && !out.is_null() {
-        // SAFETY: при успехе *out — PSO из кэша, desc — его описание.
+        // SAFETY: on success *out is a cached PSO and desc is its description.
         unsafe { recipes::record_graphics(*out, desc) };
     }
     hr
@@ -328,11 +328,11 @@ unsafe extern "system" fn hooked_lib_compute(this: *mut c_void, name: *const u16
             return library_miss(out);
         }
     }
-    // SAFETY: оригинал записан при подстановке vtable.
+    // SAFETY: the original was stored when the vtable was substituted.
     let orig: LibLoad = unsafe { std::mem::transmute(ORIG_LIB_COMPUTE.load(Ordering::Acquire)) };
     let hr = unsafe { orig(this, name, desc, riid, out) };
     if hr >= 0 && !out.is_null() {
-        // SAFETY: при успехе *out — PSO из кэша, desc — его описание.
+        // SAFETY: on success *out is a cached PSO and desc is its description.
         unsafe { recipes::record_compute(*out, desc) };
     }
     hr
@@ -351,11 +351,11 @@ unsafe extern "system" fn hooked_lib_stream(this: *mut c_void, name: *const u16,
         }
         note_pipeline(Kind::Library);
     }
-    // SAFETY: оригинал записан при подстановке vtable.
+    // SAFETY: the original was stored when the vtable was substituted.
     let orig: LibLoad = unsafe { std::mem::transmute(ORIG_LIB_STREAM.load(Ordering::Acquire)) };
     let hr = unsafe { orig(this, name, desc, riid, out) };
     if hr >= 0 && !out.is_null() && !desc.is_null() {
-        // SAFETY: D3D12_PIPELINE_STATE_STREAM_DESC { SIZE_T, void* }; *out — PSO из кэша.
+        // SAFETY: D3D12_PIPELINE_STATE_STREAM_DESC { SIZE_T, void* }; *out is a cached PSO.
         let (size, stream) = unsafe { (*(desc as *const usize), *(desc.add(8) as *const *const u8)) };
         unsafe { recipes::record_stream(*out, stream, size) };
     }
@@ -363,41 +363,41 @@ unsafe extern "system" fn hooked_lib_stream(this: *mut c_void, name: *const u16,
 }
 
 
-/// Промах в кэше пайплайнов ради подмены: игра создаст пайплайн через устройство.
+/// Pipeline cache miss on purpose for overrides: the game will create the pipeline through the device.
 const E_INVALIDARG: i32 = 0x8007_0057_u32 as i32;
 
 fn library_miss(out: *mut *mut c_void) -> i32 {
     static ONCE: AtomicBool = AtomicBool::new(false);
     if !ONCE.swap(true, Ordering::Relaxed) {
-        debug("кэш пайплайнов: подменённые PSO отдаём как промах, игра создаст их заново");
+        debug("pipeline cache: overridden PSOs are reported as misses, the game recreates them");
     }
     if !out.is_null() {
-        // SAFETY: out — выходной указатель вызывающего.
+        // SAFETY: out is the caller's output pointer.
         unsafe { *out = std::ptr::null_mut() };
     }
     E_INVALIDARG
 }
 
 static HOOKED: AtomicBool = AtomicBool::new(false);
-/// Устройство игры: на нём пересоздаём подменённые PSO при перезагрузке.
+/// The game's device: overridden PSOs are recreated on it during a reload.
 static DEVICE: AtomicUsize = AtomicUsize::new(0);
 /// IID_ID3D12PipelineState {765a30f3-f624-4c6f-a828-ace948622445}.
 const IID_PSO: [u8; 16] = live::guid(0x765a30f3, 0xf624, 0x4c6f, [0xa8, 0x28, 0xac, 0xe9, 0x48, 0x62, 0x24, 0x45]);
 
-/// `grace-ctl overrides reload`: перечитать подмены и пересоздать подменённые PSO.
+/// `grace-ctl overrides reload`: re-read overrides and recreate the overridden PSOs.
 pub(crate) fn reload_overrides() -> String {
     let dev = DEVICE.load(Ordering::Acquire) as *mut c_void;
     if dev.is_null() {
-        return "перезагрузка: устройства ещё нет".into();
+        return "reload: no device yet".into();
     }
     if !recipes::active() {
-        return "перезагрузка: каталог подмен не задан (GRACE_SHADER_OVERRIDE)".into();
+        return "reload: override directory not set (GRACE_SHADER_OVERRIDE)".into();
     }
     let started = std::time::Instant::now();
     let loaded = overrides::reload();
     let original = |stage: &str, hash: u64| std::fs::read(dump_dir()?.join(format!("{hash:016x}.{stage}.dxbc"))).ok();
     let create = |kind: recipes::Kind, bytes: &[u8], out: *mut *mut c_void| -> i32 {
-        // SAFETY: оригиналы методов устройства записаны в hook_device; описание собрано из рецепта.
+        // SAFETY: the original device methods were stored in hook_device; the description is built from the recipe.
         unsafe {
             match kind {
                 recipes::Kind::Graphics => {
@@ -422,7 +422,7 @@ pub(crate) fn reload_overrides() -> String {
     };
     let r = recipes::rebuild(overrides::get, original, create, live::set_pair);
     format!(
-        "перезагрузка: подмен {loaded}, PSO пересоздано {}, ошибок {}, снято {} за {} мс",
+        "reload: overrides {loaded}, PSOs recreated {}, errors {}, removed {} in {} ms",
         r.created,
         r.failed,
         r.cleared,
@@ -436,12 +436,12 @@ pub unsafe extern "system" fn D3D12CreateDevice(adapter: *mut c_void, level: u32
     if real == 0 {
         return 0x8000_4005_u32 as i32; // E_FAIL
     }
-    // SAFETY: адрес настоящей функции из системного d3d12.dll.
+    // SAFETY: address of the real function from the system d3d12.dll.
     let real: CreateDevice = unsafe { std::mem::transmute(real) };
     let hr = unsafe { real(adapter, level, riid, out) };
-    debug(&format!("D3D12CreateDevice(уровень {level:#x}) → {hr:#x}"));
+    debug(&format!("D3D12CreateDevice(level {level:#x}) -> {hr:#x}"));
     if hr >= 0 && !out.is_null() {
-        // SAFETY: при успехе *out — указатель на COM-объект устройства.
+        // SAFETY: on success *out points to the device COM object.
         let dev = unsafe { *out };
         if !dev.is_null() {
             unsafe { hook_device(dev) };
@@ -450,21 +450,21 @@ pub unsafe extern "system" fn D3D12CreateDevice(adapter: *mut c_void, level: u32
     hr
 }
 
-/// Сколько слотов vtable копируем: с запасом на ID3D12Device до 14-й версии (~80 методов).
+/// How many vtable slots are copied: enough for ID3D12Device up to version 14 (~80 methods).
 const VTBL_SLOTS: usize = 128;
 
-/// Наша копия vtable устройства. vtable D3DMetal лежит в read-only памяти маковского
-/// фреймворка, `VirtualProtect` Wine её не меняет — поэтому объекту подставляется копия.
+/// Our copy of the device vtable. The D3DMetal vtable lives in read-only memory of the macOS
+/// framework and Wine's `VirtualProtect` does not change that, so the object gets a copy.
 static CLONED_VTBL: AtomicUsize = AtomicUsize::new(0);
 static ORIG_VTBL: AtomicUsize = AtomicUsize::new(0);
 
-/// Подменяет указатель vtable у объекта на нашу копию (если это объект с исходной vtable).
+/// Points the object's vtable at our copy (if it is an object with the original vtable).
 unsafe fn adopt(obj: *mut c_void) {
     let (orig, clone) = (ORIG_VTBL.load(Ordering::Acquire), CLONED_VTBL.load(Ordering::Acquire));
     if obj.is_null() || orig == 0 || clone == 0 {
         return;
     }
-    // SAFETY: первое поле COM-объекта — указатель на vtable; сам объект лежит в куче, писать можно.
+    // SAFETY: the first field of a COM object is the vtable pointer; the object is on the heap, writable.
     unsafe {
         let p = obj as *mut usize;
         if *p == orig {
@@ -477,11 +477,11 @@ unsafe fn hook_device(dev: *mut c_void) {
     if HOOKED.swap(true, Ordering::AcqRel) {
         return;
     }
-    // SAFETY: первое поле COM-объекта — указатель на vtable.
+    // SAFETY: the first field of a COM object is the vtable pointer.
     let vtbl = unsafe { *(dev as *const *const usize) };
-    // Слот 47 есть только у ID3D12Device2+: проверяем, что объект отдаёт этот интерфейс
-    // тем же указателем (значит, vtable общая и длиннее 47 слотов).
-    // SAFETY: слоты 0 и 2 — QueryInterface и Release любого COM-объекта.
+    // Slot 47 exists only on ID3D12Device2+: check that the object returns that interface
+    // as the same pointer (so the vtable is shared and longer than 47 slots).
+    // SAFETY: slots 0 and 2 are QueryInterface and Release of any COM object.
     let qi: QueryInterface = unsafe { std::mem::transmute(*vtbl) };
     let release: Release = unsafe { std::mem::transmute(*vtbl.add(2)) };
     let mut d2 = std::ptr::null_mut();
@@ -497,7 +497,7 @@ unsafe fn hook_device(dev: *mut c_void) {
         unsafe { release(d4) };
     }
 
-    // SAFETY: читаем VTBL_SLOTS указателей из vtable (константные данные фреймворка).
+    // SAFETY: reads VTBL_SLOTS pointers from the vtable (constant framework data).
     let mut clone: Box<[usize; VTBL_SLOTS]> = Box::new([0; VTBL_SLOTS]);
     unsafe { std::ptr::copy_nonoverlapping(vtbl, clone.as_mut_ptr(), VTBL_SLOTS) };
     let mut set = |slot: usize, hook: usize, orig: &AtomicUsize| {
@@ -521,27 +521,27 @@ unsafe fn hook_device(dev: *mut c_void) {
     CLONED_VTBL.store(clone.as_ptr() as usize, Ordering::Release);
     unsafe { adopt(dev) };
     debug(&format!(
-        "устройству подставлена своя vtable (потоковые PSO: {}, CreateCommandList1: {})",
-        if stream { "да" } else { "нет" },
-        if device4 { "да" } else { "нет" }
+        "device got our vtable (stream PSOs: {}, CreateCommandList1: {})",
+        if stream { "yes" } else { "no" },
+        if device4 { "yes" } else { "no" }
     ));
     live::start_control();
 }
 
 unsafe extern "system" fn hooked_graphics(this: *mut c_void, desc: *const u8, riid: *const [u8; 16], out: *mut *mut c_void) -> i32 {
     if !desc.is_null() {
-        // D3D12_GRAPHICS_PIPELINE_STATE_DESC: pRootSignature, затем VS, PS, DS, HS, GS по 16 байт.
+        // D3D12_GRAPHICS_PIPELINE_STATE_DESC: pRootSignature, then VS, PS, DS, HS, GS, 16 bytes each.
         for (i, stage) in ["vs", "ps", "ds", "hs", "gs"].iter().enumerate() {
-            // SAFETY: поля по документированному смещению структуры.
+            // SAFETY: fields at the documented offsets of the structure.
             unsafe { dump_bytecode(stage, desc.add(8 + i * 16)) };
         }
         note_pipeline(Kind::Graphics);
     }
-    // SAFETY: оригинал записан при установке хука.
+    // SAFETY: the original was stored when the hook was installed.
     let orig: CreatePso = unsafe { std::mem::transmute(ORIG_GRAPHICS.load(Ordering::Acquire)) };
     let hr = unsafe { orig(this, desc, riid, out) };
     if hr >= 0 && !out.is_null() {
-        // SAFETY: при успехе *out — PSO, desc — его описание.
+        // SAFETY: on success *out is a PSO and desc is its description.
         unsafe { recipes::record_graphics(*out, desc) };
     }
     if hr >= 0
@@ -559,11 +559,11 @@ unsafe extern "system" fn hooked_compute(this: *mut c_void, desc: *const u8, rii
         unsafe { dump_bytecode("cs", desc.add(8)) };
         note_pipeline(Kind::Compute);
     }
-    // SAFETY: оригинал записан при установке хука.
+    // SAFETY: the original was stored when the hook was installed.
     let orig: CreatePso = unsafe { std::mem::transmute(ORIG_COMPUTE.load(Ordering::Acquire)) };
     let hr = unsafe { orig(this, desc, riid, out) };
     if hr >= 0 && !out.is_null() {
-        // SAFETY: при успехе *out — PSO, desc — его описание.
+        // SAFETY: on success *out is a PSO and desc is its description.
         unsafe { recipes::record_compute(*out, desc) };
     }
     if hr >= 0
@@ -576,13 +576,13 @@ unsafe extern "system" fn hooked_compute(this: *mut c_void, desc: *const u8, rii
 }
 
 unsafe extern "system" fn hooked_stream(this: *mut c_void, desc: *const u8, riid: *const [u8; 16], out: *mut *mut c_void) -> i32 {
-    // SAFETY: оригинал записан при установке хука.
+    // SAFETY: the original was stored when the hook was installed.
     let orig: CreatePso = unsafe { std::mem::transmute(ORIG_STREAM.load(Ordering::Acquire)) };
     if desc.is_null() {
         return unsafe { orig(this, desc, riid, out) };
     }
     // D3D12_PIPELINE_STATE_STREAM_DESC { SIZE_T SizeInBytes; void* pPipelineStateSubobjectStream; }
-    // SAFETY: структура из двух полей по 8 байт.
+    // SAFETY: a structure of two 8-byte fields.
     let (size, stream) = unsafe { (*(desc as *const usize), *(desc.add(8) as *const *const u8)) };
     if !stream.is_null() {
         unsafe { parse_stream(stream, size) };
@@ -590,21 +590,21 @@ unsafe extern "system" fn hooked_stream(this: *mut c_void, desc: *const u8, riid
     note_pipeline(Kind::Stream);
     let hr = unsafe { orig(this, desc, riid, out) };
     if hr >= 0 && !out.is_null() && !stream.is_null() {
-        // SAFETY: при успехе *out — PSO, stream — его поток подобъектов.
+        // SAFETY: on success *out is a PSO and stream is its subobject stream.
         unsafe { recipes::record_stream(*out, stream, size) };
     }
     if hr >= 0
         && !stream.is_null()
         && let Some(copy) = unsafe { overrides::stream_copy(stream, size) }
     {
-        // Новое D3D12_PIPELINE_STATE_STREAM_DESC на нашу копию потока.
+        // A new D3D12_PIPELINE_STATE_STREAM_DESC pointing at our copy of the stream.
         let new_desc: [usize; 2] = [size, copy.as_ptr() as usize];
         unsafe { make_pair(out, |o| orig(this, new_desc.as_ptr().cast(), riid, o)) };
     }
     hr
 }
 
-/// (смещение данных от начала подобъекта, размер данных) по типу подобъекта.
+/// (data offset from the start of the subobject, data size) by subobject type.
 pub(crate) fn subobject_layout(ty: u32) -> Option<(usize, usize)> {
     Some(match ty {
         0 => (8, 8),               // ROOT_SIGNATURE
@@ -627,12 +627,12 @@ pub(crate) fn subobject_layout(ty: u32) -> Option<(usize, usize)> {
 unsafe fn parse_stream(stream: *const u8, size: usize) {
     let mut off = 0usize;
     while off + 4 <= size {
-        // SAFETY: читаем внутри переданного потока размера size.
+        // SAFETY: reads inside the passed stream of `size` bytes.
         let ty = unsafe { std::ptr::read_unaligned(stream.add(off) as *const u32) };
         let Some((data_off, data_size)) = subobject_layout(ty) else {
             static ONCE: AtomicBool = AtomicBool::new(false);
             if !ONCE.swap(true, Ordering::Relaxed) {
-                debug(&format!("неизвестный тип подобъекта PSO {ty}, разбор потока остановлен"));
+                debug(&format!("unknown PSO subobject type {ty}, stream parsing stopped"));
             }
             return;
         };
@@ -654,13 +654,13 @@ unsafe fn parse_stream(stream: *const u8, size: usize) {
     }
 }
 
-// ---- дамп и статистика ----------------------------------------------------------------------
+// ---- dump and statistics -------------------------------------------------------------------
 
 enum Kind {
     Graphics,
     Compute,
     Stream,
-    /// Загрузка PSO из ID3D12PipelineLibrary (кэш игры).
+    /// PSO loads from ID3D12PipelineLibrary (the game's cache).
     Library,
 }
 
@@ -674,7 +674,7 @@ pub(crate) fn dump_dir() -> Option<&'static std::path::Path> {
     DIR.get_or_init(|| {
         let dir = std::path::PathBuf::from(std::env::var_os("GRACE_SHADER_DUMP")?);
         std::fs::create_dir_all(&dir).ok()?;
-        debug(&format!("дамп шейдеров в {}", dir.display()));
+        debug(&format!("dumping shaders to {}", dir.display()));
         Some(dir)
     })
     .as_deref()
@@ -684,16 +684,16 @@ pub(crate) fn fnv1a(data: &[u8]) -> u64 {
     data.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3))
 }
 
-/// `bc` указывает на D3D12_SHADER_BYTECODE { const void* pShaderBytecode; SIZE_T BytecodeLength; }.
+/// `bc` points to D3D12_SHADER_BYTECODE { const void* pShaderBytecode; SIZE_T BytecodeLength; }.
 unsafe fn dump_bytecode(stage: &str, bc: *const u8) {
-    // SAFETY: структура из указателя и длины.
+    // SAFETY: a structure of a pointer and a length.
     let (ptr, len) = unsafe { (*(bc as *const *const u8), *(bc.add(8) as *const usize)) };
     if ptr.is_null() || len == 0 || len > 64 << 20 {
         return;
     }
     SHADERS_SEEN.fetch_add(1, Ordering::Relaxed);
     let Some(dir) = dump_dir() else { return };
-    // SAFETY: байткод шейдера длиной len, переданный игрой в D3D12.
+    // SAFETY: shader bytecode of length len passed by the game to D3D12.
     let data = unsafe { std::slice::from_raw_parts(ptr, len) };
     let path = dir.join(format!("{:016x}.{stage}.dxbc", fnv1a(data)));
     if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)
@@ -715,7 +715,7 @@ fn note_pipeline(kind: Kind) {
     let total: u64 = PIPELINES.iter().map(|p| p.load(Ordering::Relaxed)).sum();
     if total == 1 || total.is_multiple_of(25) || n == 1 {
         let stats = format!(
-            "пайплайнов: graphics {} · compute {} · stream {} · из библиотеки {}\nшейдеров увидено {} · новых в дампе {} ({} КБ)\n",
+            "pipelines: graphics {} · compute {} · stream {} · from library {}\nshaders seen {} · new in dump {} ({} KB)\n",
             PIPELINES[0].load(Ordering::Relaxed),
             PIPELINES[1].load(Ordering::Relaxed),
             PIPELINES[2].load(Ordering::Relaxed),

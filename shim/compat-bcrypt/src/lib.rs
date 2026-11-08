@@ -1,18 +1,18 @@
-//! Compat-shim `bcrypt.dll` для Wine 7.7 из GPTK.
+//! Compat shim `bcrypt.dll` for GPTK's Wine 7.7.
 //!
-//! Зачем: современные Windows-программы (клиент Steam, `tier0_s64.dll`,
-//! `steamclient64.dll`) передают в `BCryptGenRandom` и другие функции
-//! псевдо-хендлы алгоритмов (`BCRYPT_RNG_ALG_HANDLE` = 0x81 и т.п., Windows 10+).
-//! Wine 7.7 их не знает и разыменовывает как указатель — процесс падает.
+//! Why: modern Windows programs (the Steam client, `tier0_s64.dll`,
+//! `steamclient64.dll`) pass algorithm pseudo-handles to `BCryptGenRandom` and other functions
+//! (`BCRYPT_RNG_ALG_HANDLE` = 0x81 etc., Windows 10+).
+//! Wine 7.7 does not know them and dereferences them as pointers: the process crashes.
 //!
-//! Как: DLL экспортирует все функции настоящего `bcrypt.dll`. Каждый экспорт —
-//! naked-трамплин с `jmp` на настоящую функцию из builtin `bcrypt.dll` Wine.
-//! Функциям, у которых первый аргумент — хендл алгоритма, трамплин сначала
-//! подменяет псевдо-хендл на настоящий: провайдер открывается через
-//! `BCryptOpenAlgorithmProvider` один раз и кэшируется.
+//! How: the DLL exports every function of the real `bcrypt.dll`. Every export is
+//! a naked trampoline with a `jmp` to the real function in Wine's builtin `bcrypt.dll`.
+//! For functions whose first argument is an algorithm handle the trampoline first
+//! replaces the pseudo-handle with a real one: the provider is opened via
+//! `BCryptOpenAlgorithmProvider` once and cached.
 //!
-//! Подключение: положить как `bcrypt.dll` рядом с exe и включить для этого exe
-//! `DllOverrides: bcrypt=native,builtin` (см. compat-shim'ы в `docs/ARCHITECTURE.md`).
+//! Setup: put it next to the exe as `bcrypt.dll` and enable for that exe
+//! `DllOverrides: bcrypt=native,builtin` (see compat shims in `docs/ARCHITECTURE.md`).
 
 #![cfg(all(windows, target_arch = "x86_64"))]
 #![allow(non_snake_case, clippy::missing_safety_doc)]
@@ -36,9 +36,9 @@ macro_rules! thunk {
         #[unsafe(no_mangle)]
         #[unsafe(naked)]
         pub unsafe extern "system" fn $name() {
-            // Псевдо-хендлы — маленькие числа с младшим битом 1 (0x01, 0x11, …, 0x81, …);
-            // настоящие хендлы — выровненные указатели. Аргументы 2–4 (rdx, r8, r9)
-            // сохраняем, стековые аргументы не трогаем.
+            // Pseudo-handles are small numbers with the low bit set (0x01, 0x11, …, 0x81, …);
+            // real handles are aligned pointers. Arguments 2-4 (rdx, r8, r9)
+            // are preserved, stack arguments are left alone.
             core::arch::naked_asm!(
                 "test cl, 1",
                 "jz 2f",
@@ -47,7 +47,7 @@ macro_rules! thunk {
                 "push rdx",
                 "push r8",
                 "push r9",
-                // На входе rsp ≡ 8 (mod 16); три push и 32 байта shadow space дают 0 (mod 16).
+                // On entry rsp ≡ 8 (mod 16); three pushes and 32 bytes of shadow space give 0 (mod 16).
                 "sub rsp, 32",
                 "call {translate}",
                 "add rsp, 32",
@@ -74,10 +74,10 @@ use thunks::NAMES;
 
 const N: usize = NAMES.len();
 
-/// Адреса настоящих функций в порядке `NAMES`. Читается из asm-трамплинов.
+/// Addresses of the real functions in `NAMES` order. Read from the asm trampolines.
 static REAL: [AtomicUsize; N] = [const { AtomicUsize::new(0) }; N];
 
-/// Кэш открытых провайдеров по индексу псевдо-хендла (`h >> 4`).
+/// Cache of opened providers by pseudo-handle index (`h >> 4`).
 static OPENED: [AtomicUsize; 16] = [const { AtomicUsize::new(0) }; 16];
 
 const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002_u32 as i32;
@@ -96,7 +96,7 @@ pub(crate) fn debug(msg: &str) {
     s.extend_from_slice(b"[grace compat-bcrypt] ");
     s.extend_from_slice(msg.as_bytes());
     s.extend_from_slice(b"\n\0");
-    // SAFETY: строка нуль-терминирована.
+    // SAFETY: the string is null-terminated.
     unsafe { OutputDebugStringA(s.as_ptr()) };
 }
 
@@ -104,7 +104,7 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Псевдо-хендлы из bcrypt.h (Windows 10): значение → (идентификатор алгоритма, HMAC?).
+/// Pseudo-handles from bcrypt.h (Windows 10): value -> (algorithm id, HMAC?).
 fn pseudo_alg(h: usize) -> Option<(&'static str, bool)> {
     Some(match h {
         0x01 => ("MD2", false),
@@ -131,11 +131,11 @@ fn open_index() -> usize {
     NAMES.iter().position(|n| *n == "BCryptOpenAlgorithmProvider").unwrap_or(0)
 }
 
-/// Вызывается из трамплина: псевдо-хендл → настоящий хендл провайдера.
-/// При неудаче возвращает исходное значение — поведение как без shim.
+/// Called from the trampoline: pseudo-handle -> real provider handle.
+/// On failure returns the original value: behavior as without the shim.
 extern "system" fn translate_pseudo(h: usize) -> usize {
     let Some((alg, hmac)) = pseudo_alg(h) else {
-        debug(&format!("неизвестный псевдо-хендл {h:#x}, пропускаю как есть"));
+        debug(&format!("unknown pseudo-handle {h:#x}, passing it through"));
         return h;
     };
     let slot = &OPENED[h >> 4];
@@ -147,7 +147,7 @@ extern "system" fn translate_pseudo(h: usize) -> usize {
     if open == 0 {
         return h;
     }
-    // SAFETY: адрес получен через GetProcAddress("BCryptOpenAlgorithmProvider").
+    // SAFETY: the address was obtained via GetProcAddress("BCryptOpenAlgorithmProvider").
     let open: extern "system" fn(*mut usize, *const u16, *const u16, u32) -> i32 =
         unsafe { std::mem::transmute::<usize, _>(open) };
     let mut handle = 0usize;
@@ -155,13 +155,13 @@ extern "system" fn translate_pseudo(h: usize) -> usize {
     let flags = if hmac { BCRYPT_ALG_HANDLE_HMAC_FLAG } else { 0 };
     let status = open(&mut handle, id.as_ptr(), std::ptr::null(), flags);
     if status != 0 || handle == 0 {
-        debug(&format!("не открылся провайдер {alg} (hmac={hmac}) для {h:#x}: status {status:#x}"));
+        debug(&format!("provider {alg} (hmac={hmac}) did not open for {h:#x}: status {status:#x}"));
         return h;
     }
-    // Гонка двух потоков даст один лишний открытый провайдер — некритично.
+    // A race between two threads opens one extra provider: harmless.
     match slot.compare_exchange(0, handle, Ordering::AcqRel, Ordering::Acquire) {
         Ok(_) => {
-            debug(&format!("псевдо-хендл {h:#x} → провайдер {alg} (hmac={hmac})"));
+            debug(&format!("pseudo-handle {h:#x} -> provider {alg} (hmac={hmac})"));
             handle
         }
         Err(existing) => existing,
@@ -174,15 +174,15 @@ extern "system" fn not_implemented() -> i32 {
 
 fn resolve_real() {
     let mut dir = [0u16; 260];
-    // SAFETY: буфер на 260 u16, размер передан.
+    // SAFETY: a 260-u16 buffer, its size is passed.
     let len = unsafe { GetSystemDirectoryW(dir.as_mut_ptr(), dir.len() as u32) } as usize;
     let mut path: Vec<u16> = dir[..len.min(dir.len())].to_vec();
     path.extend(wide("\\bcrypt.dll"));
-    // SAFETY: путь нуль-терминирован. Это builtin bcrypt Wine: полный путь отличается
-    // от нашего, поэтому загрузчик не считает его уже загруженным.
+    // SAFETY: the path is null-terminated. This is Wine's builtin bcrypt: its full path differs
+    // from ours, so the loader does not consider it already loaded.
     let real = unsafe { LoadLibraryW(path.as_ptr()) };
     if real.is_null() {
-        debug("не загрузился системный bcrypt.dll — все вызовы вернут STATUS_NOT_IMPLEMENTED");
+        debug("the system bcrypt.dll did not load: every call returns STATUS_NOT_IMPLEMENTED");
     }
     let mut resolved = 0;
     for (slot, name) in REAL.iter().zip(NAMES) {
@@ -191,7 +191,7 @@ fn resolve_real() {
         let addr = if real.is_null() {
             std::ptr::null_mut()
         } else {
-            // SAFETY: модуль загружен, имя нуль-терминировано.
+            // SAFETY: the module is loaded, the name is null-terminated.
             unsafe { GetProcAddress(real, cname.as_ptr()) }
         };
         if addr.is_null() {
@@ -201,17 +201,17 @@ fn resolve_real() {
             resolved += 1;
         }
     }
-    debug(&format!("загружен, настоящих функций найдено {resolved}/{N}"));
+    debug(&format!("loaded, real functions found {resolved}/{N}"));
 
-    // Chromium ищет QueryUnbiasedInterruptTimePrecise через GetModuleHandle по имени
-    // API-set, то есть DLL должна быть уже загружена. bcrypt.dll импортируется
-    // steamwebhelper.exe, поэтому заодно подгружаем compat-realtime, если он установлен.
+    // Chromium looks up QueryUnbiasedInterruptTimePrecise via GetModuleHandle by the
+    // API-set name, so the DLL must already be loaded. bcrypt.dll is imported by
+    // steamwebhelper.exe, so we also load compat-realtime if it is installed.
     let mut rt: Vec<u16> = dir[..len.min(dir.len())].to_vec();
     rt.extend(wide("\\api-ms-win-core-realtime-l1-1-1.dll"));
-    // SAFETY: путь нуль-терминирован; отсутствие файла — не ошибка.
+    // SAFETY: the path is null-terminated; a missing file is not an error.
     let realtime = unsafe { LoadLibraryW(rt.as_ptr()) };
     if !realtime.is_null() {
-        debug("подгружен compat-realtime");
+        debug("compat-realtime loaded");
         getproc_fallback::install(realtime);
     }
 }
@@ -220,7 +220,7 @@ fn resolve_real() {
 pub extern "system" fn DllMain(_module: *mut c_void, reason: u32, _reserved: *mut c_void) -> i32 {
     if reason == DLL_PROCESS_ATTACH {
         resolve_real();
-        // Остальные compat-исправления: модули, загруженные позже, патчим при загрузке.
+        // The other compat fixes: modules loaded later are patched at load time.
         iat::watch_loads();
         winsock::install();
         tcp_owners::install();

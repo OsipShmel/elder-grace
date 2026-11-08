@@ -2,40 +2,30 @@
 
 Новые записи — сверху. Каждая запись: что сделано, как проверено, цифры, что дальше, блокеры.
 
-## ▶ Текущее состояние (сводка на 2026-11-08, читать первым)
+## ▶ Текущее состояние (сводка на 2026-11-08 вечер, читать первым)
 
-**Раскладка:** `ProjectPort/` (не git) → `elder-grace/` (движок, git, `main`), `grace-eldenring/` (игра, git, `main`), `.local/` (данные, префикс, кэши — не git). Чистая копия Elden Ring: `~/Games/EldenRing/Game` (read-only), песочница — APFS-клон в `.local/game_bean/elden_ring`.
+**Где мы:** путь A (нативный просмотр данных) пройден — 6/6 вех. **Следующее по порядку:** Фаза R (реструктуризация репо, README, английский) → Фаза 6 **C2-b** (нативный рендер по состоянию живой игры). План — `docs/PLAN.md` (разделы «Фаза R», «Фаза 6 — C2-b»), решения — ADR 0004 (C2-b), 0005 (движок как фреймворк, подключение cargo git + `[patch]`). **Ничего из этого не начинать без команды пользователя.**
 
-**Работает (всё проверено):**
-- Эталон на GPTK 3.0-3 одной командой: `cargo xtask oracle setup|steam [--ui]|run [--label L] [--no-shim] [--no-overrides]|status|kill`. Windows-Steam в префиксе поднят нашими compat-shim'ами для Wine 7.7 (bcrypt: псевдо-хендлы; realtime: `Query*InterruptTime*`; winsock: `getsockname` после `AcceptEx`; TCP-реестр владельцев для `GetExtendedTcpTable`; запасной `GetProcAddress`; общий IAT-патчер). Пользователь залогинен, сессия запомнена. `crash-probe` — отладчик падений вместо `winedbg`.
-- Shim `d3d12.dll` в игре: копии vtable устройства и библиотеки пайплайнов; дамп шейдеров (корпус 5988, 99,5% DXIL 6.0); **подмена шейдеров** (`GRACE_SHADER_OVERRIDE`, HLSL в `grace-eldenring/shaders/overrides/`, `cargo xtask overrides`) — текст меню золотой, подтверждено пользователем. В ветке `feat/live-overrides`: `grace-ctl overrides on|off|toggle|reload` и `cargo xtask overrides --reload` — правка HLSL видна в игре через ~2 с без перезапуска. В `feat/dxil-overrides`: правка оригинального DXIL (`.irpatch`), dxc, поиск шейдеров по имени, `grace-ctl bound`.
-- Конвейер шейдеров `cargo xtask shaders`: DXIL → metallib (Metal Shader Converter из GPTK, `tools/grace-irconv` под Rosetta), DXBC → vkd3d → SPIRV-Cross → metallib; 5988/5988 грузятся в Metal (M5 Pro). Это компилируемость, не рендер.
-- Замеры: shim `dxgi.dll` (время кадра из `Present`), `cargo xtask bench`, `cargo xtask trace` (Metal System Trace + вердикт CPU/GPU), `grace-ctl --shim watch`.
+**Ветки, ждут мержа пользователем:** `feat/game-camera` в **обоих** репо — мержить вместе (игровые `er-tool`/`er-viewer` используют код ядра из этой ветки). Агент не мержит и не пушит.
 
-**esync (2026-11-08):** открытый мир 38.7 → **47.1 FPS**, p95 40 → 26.6 мс. Трейс ожиданий показал, что главный поток игры тратит 22% рабочего времени на синхронизацию через wineserver; в Wine GPTK есть esync, эталон его не включал. A/B у места благодати: **49.6 → 59.1 FPS (упор в лимит 60)**, сцена с esync была даже тяжелее. Теперь `oracle` включает esync по умолчанию (`--no-esync` — старый режим). Базовые цифры ниже — **без esync**, переснять.
+**Раскладка:** `ProjectPort/` (не git) → `elder-grace/` (ядро, git), `grace-eldenring/` (игра, git), `.local/` (данные, префикс, кэши, кадры — не git). Чистая копия Elden Ring 1.17.2: `~/Games/EldenRing/Game` (read-only), песочница — `.local/game_bean/elden_ring`.
 
-**Базовая линия (world-base, макс. настройки, без esync):** открытый мир 25–46 FPS, подземелье ~60 (лимит игры). В мире GPU занят 63–71%, главный поток 66–70% ядра, ~60 command buffer на кадр → ни GPU, ни CPU не насыщены, кадр теряется на взаимном ожидании. Подробно — `grace-eldenring/docs/BASELINE.md`. Следующий диагностический шаг — какие именно ожидания (thread states/Time Profiler).
+**Что работает (проверено):**
+- **Эталон** на GPTK 3.0-3 одной командой: `cargo xtask oracle setup|steam [--ui]|run [--label L] [--no-shim] [--no-overrides] [--no-esync]|status|kill|shot <png>`. esync по умолчанию (+~20% в открытом мире). Steam логинится сам по сохранённой сессии.
+- **Shim d3d12 в игре:** дамп шейдеров (5988), подмены на лету (`grace-ctl overrides on|off|toggle|reload`, `cargo xtask overrides --reload`; `.hlsl` для DXBC/DXIL, `.irpatch` — правка оригинального DXIL), `grace-ctl bound` (шейдеры кадра), камера и отладка памяти: `grace-ctl camera|peek|find-floats` (поиск по памяти процесса через VirtualQuery+ReadProcessMemory — безопасно). Активна только подмена «золотой текст»; демо-правки — `grace-eldenring/shaders/overrides/examples/`.
+- **Замеры:** shim dxgi (время кадра), `cargo xtask bench`, `cargo xtask trace [--template "System Trace"]`.
+- **Слой данных (`grace-eldenring/crates/er-data`):** RSA-ключи из `eldenring.exe` пользователя (в git нет), BHD5/BDT/AES, DCX (Kraken на чистом Rust), BND4, FLVER2, MATBIN, TPF, MSB. `er-tool keys|ls|find|probe|extract|flver-check|camera`.
+- **Нативный рендер (`elder-grace/crates/grace-render`, `grace-eldenring/crates/er-viewer`):** Metal, инстансинг, BCn-текстуры, альфа-тест, камера (орбита + WASD), захват PNG, склейка «наш | эталон». Сцена Stranded Graveyard целиком (`er-viewer m18_00_00_00 --map`), ~1 с загрузки, 31 млн треугольников.
+- **M6 — сравнение с эталоном автоматически:** игра в склепе → `cd grace-eldenring && cargo run -p er-tool -- camera --save cam.json` → `cd ../elder-grace && cargo xtask oracle shot oracle.png` → `cargo run --release -p er-viewer -- m18_00_00_00 --map --camera cam.json --capture ours.png --size 1728x972 --compare oracle.png`. Совпадение ~1–3% ширины кадра.
 
-**▶ В работе: путь A — нативный просмотр данных** (`grace-eldenring`, коммиты агента прямо в `main` игры). Спека — `grace-eldenring/docs/specs/2026-11-08-native-viewer-design.md`, план — `grace-eldenring/docs/plans/2026-11-08-native-viewer.md`.
+**Ключевые знания (подробно — `grace-eldenring/docs/FORMATS.md`, `BASELINE.md`):**
+- Узкое место — CPU (главный поток под Rosetta + трансляция D3DMetal), GPU ~67%. Шейдеры игры на GPU уже нативные — свои MSL внутрь процесса игры не подсовываем.
+- Камера: `cbSceneParam` (pos +48, proj +256, invView +320) в **локальных** координатах; мировые — через структуру камеры игры (матрица построчно + сдвиг начала, напр. (112, −8, −8) + [fovy, near, far, aspect]).
+- **Нельзя:** подменять vtable ресурсов D3DMetal (игра падает), класть служебные слова ABI в копии vtable (падает). Копии vtable — прежняя раскладка (оригинал на [−1]).
 
-Прогресс: `[■■■■■■] 6/6` — ✓ M1 архивы · ✓ M2 извлечение · ✓ M3 текстуры · ✓ M4 модель с текстурами · ✓ M5 сцена Stranded Graveyard (без деревьев SpeedTree и света игры) · ✓ M6 сравнение с эталоном: камера и мировое положение из живой игры, кадр склепа совпадает до ~1–3% ширины кадра — автоматически (ветки `feat/game-camera` в обоих репо).
+**Пробелы рендера:** деревья SpeedTree (позиции в чужом потоке), кости статических мешей, нормали/свет/туман как в игре, текстуры-маски кусков карты, открытый мир (`m60`).
 
-Запуск сцены: `cd grace-eldenring && cargo run --release -p er-viewer -- m18_00_00_00 --map` (мышь — обзор, колесо — расстояние, WASD/QE — полёт, Shift — быстрее).
-
-**Решение пользователя (2026-11-08):** полноценная инъекция в игру (камера/состояние из живой игры для M6 и дальше C2) — отдельной веткой `feat/…`, это крупная фича.
-
-Запуск: `cd grace-eldenring && cargo run -p er-viewer -- /asset/aeg/aeg003/aeg003_055.geombnd.dcx` (окно: мышь — вращение, колесо — масштаб) или `--capture ../.local/captures/x.png`.
-
-**Смержено в `main` движка (2026-11-08):** `feat/live-overrides` + `feat/dxil-overrides` (подмены на лету, DXIL-правки, esync).
-
-**(архив) Ветки к мержу:**
-- `feat/live-overrides` — подмены on/off/reload в живой игре (Сессия 3, проверено в игре).
-- `feat/dxil-overrides` — **поверх** `feat/live-overrides` (мержить после неё или вместо обеих — её одну): dxc/dxa/dxv, `.irpatch`, `cargo xtask shader`, `grace-shader names`, `grace-ctl bound` (Сессия 4). **Проверено в игре** (мир, 2026-11-08 днём).
-
-**Отложено, нужен пользователь:** разбор ожиданий CPU/GPU в мире — трейс с потоковыми состояниями (шаблон `System Trace` или `Time Profiler`; добавить в `cargo xtask trace` опцию `--template`), снимать, пока пользователь бежит по открытому миру.
-
-**Дальше по договорённости:** мелкое — прямо в `main` (коммитит агент); крупное — в feat-ветках (коммитит агент, мержит пользователь): `feat/live-overrides` (подмены через `grace-ctl` на лету), `feat/dxil-overrides` (сборка dxc, подмены DXIL). Не пушить, не мержить в main без пользователя.
-
+**Принципы:** легальная копия пользователя; pristine — только чтение; данные игры не в git; ничего онлайн; логины — пользователь; внешние сборки — с его «да»; крупное — в feat-ветках (коммитит агент, мержит пользователь); общение по-русски; после Фазы R — доки/код/коммиты на английском.
 
 ---
 

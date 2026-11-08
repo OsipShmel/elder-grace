@@ -11,10 +11,8 @@ Run from the `elder-grace/` checkout. `[game]` defaults to `GRACE_GAME` or the o
 | `cargo xtask oracle steam` | Steam in the background. |
 | `cargo xtask oracle run [game]` | Start the game from the sandbox with the shims, Metal HUD, frame log and live mirror. Starts Steam if needed. Flags: `--no-hud`, `--no-shim`, `--no-overrides`, `--no-esync`, `--label L`. |
 | `cargo xtask oracle status` | Wine processes, Steam login state, crash reports. |
-| `cargo xtask oracle kill` | **Stop everything in the prefix**: the game, every Steam process, wineserver. |
+| `cargo xtask oracle kill` | **Stop everything in the prefix**: the game, every Steam process, wineserver; then TERM/KILL for processes orphaned by a dead wineserver. |
 | `cargo xtask oracle shot out.png` | Screenshot of the game window (works when it is not in front). |
-
-If `oracle kill` leaves something behind (check with `oracle status`), the last resort is `pkill -f wine` (kills every Wine process on the Mac, not only this prefix).
 
 ## Shims and shaders
 

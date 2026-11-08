@@ -75,10 +75,7 @@ pub fn main(args: &[String]) -> Result<()> {
             let label = args.iter().position(|a| a == "--label").and_then(|i| args.get(i + 1)).cloned();
             run(&ctx(&game_key)?, RunOpts { hud: !flag("--no-hud"), shim: !flag("--no-shim"), overrides: !flag("--no-overrides"), label })
         }
-        "kill" => {
-            wine(&ctx(&game_key)?, "wineserver", &["-k"]).status()?;
-            Ok(())
-        }
+        "kill" => kill(&ctx(&game_key)?),
         "status" => status(&ctx(&game_key)?),
         "shot" => {
             let out = args.get(1).context("usage: cargo xtask oracle shot <out.png>")?;
@@ -242,6 +239,28 @@ fn prefix_processes(c: &Ctx) -> Vec<String> {
         .filter(|l| l.contains("wine64-preloader") && (l.contains(&prefix) || l.contains(".exe")))
         .map(|l| l.split(" HOMEBREW").next().unwrap_or(l).chars().take(160).collect())
         .collect()
+}
+
+/// `wineserver -k`, then signals for what is left: processes orphaned by a dead wineserver keep
+/// spinning and `wineserver -k` cannot reach them.
+fn kill(c: &Ctx) -> Result<()> {
+    let _ = wine(c, "wineserver", &["-k"]).status();
+    let pids = |c: &Ctx| -> Vec<String> { prefix_processes(c).iter().filter_map(|l| l.split_whitespace().next().map(str::to_owned)).collect() };
+    for signal in ["-TERM", "-KILL"] {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let left = pids(c);
+        if left.is_empty() {
+            break;
+        }
+        println!("{} Wine processes left, kill {signal}", left.len());
+        let _ = Command::new("kill").arg(signal).args(&left).status();
+    }
+    let left = pids(c).len();
+    if left > 0 {
+        bail!("{left} Wine processes are still running");
+    }
+    println!("prefix stopped");
+    Ok(())
 }
 
 fn steam_running(c: &Ctx) -> bool {

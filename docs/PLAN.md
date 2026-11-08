@@ -147,7 +147,7 @@ Tasks (in order):
 **Why:** play the original game (FromSoftware logic) with Elder Grace's native graphics; then take the game's own rendering away.
 
 Milestones (each checked by automatic comparison with the oracle, as in M6):
-- **B0: live camera mirror** (works on `feat/live-mirror`, 2026-11-08; see PROGRESS Session 9). The shim finds the game's camera structure once and every frame publishes the camera and world position through a fast channel (shared memory, not a 7 GB walk). The `er-viewer` window follows the game camera in real time. Numbers: latency, FPS of both windows.
+- **B0: live camera mirror** (done on `feat/live-mirror`, 2026-11-08: paired frames match while moving; see PROGRESS Session 9). The shim finds the game's camera structure once and every frame publishes the camera and world position through a fast channel (shared memory, not a 7 GB walk). The `er-viewer` window follows the game camera in real time. Numbers: latency, FPS of both windows.
 - **B1: the world around the player.** The map by player position: dungeons (`m1x`) and the open world by `m60_XX_YY` tiles with streaming; LOD.
 - **B2: dynamic objects.** Characters/enemies/items: which models and where (reading game memory: `ChrIns` etc.), in a rest pose first.
 - **B3: animation.** Bone matrices from the game (memory or skinning buffers), skinning in our renderer.

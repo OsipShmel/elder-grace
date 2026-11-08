@@ -353,6 +353,10 @@ fn serve(conn: TcpStream) {
             Ok(Some(Request::Stats)) => Response::Error { message: "статистика кадра — в shim dxgi (порт 47321)".into() },
             Ok(Some(Request::Camera { layout })) => Response::Camera(crate::resources::find_camera(&layout)),
             Ok(Some(Request::Peek { addr, len })) => Response::Peek { addr, bytes: crate::resources::peek(addr, len) },
+            Ok(Some(Request::FindFloats { ranges, limit })) => {
+                let (regions, addrs) = crate::resources::find_floats(&ranges, limit);
+                Response::Found { regions, addrs }
+            }
             Ok(Some(Request::Bound { ms })) => {
                 if crate::recipes::active() {
                     Response::Bound(bound_report(ms))

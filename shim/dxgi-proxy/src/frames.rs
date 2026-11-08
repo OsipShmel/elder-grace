@@ -127,7 +127,7 @@ fn serve(conn: TcpStream) {
                 version: env!("CARGO_PKG_VERSION").into(),
             },
             Ok(Some(Request::Stats)) => Response::Stats(snapshot()),
-            Ok(Some(Request::Overrides { .. } | Request::Bound { .. } | Request::Camera { .. } | Request::Peek { .. })) => Response::Error { message: "подмены — в shim d3d12 (порт 47322)".into() },
+            Ok(Some(Request::Overrides { .. } | Request::Bound { .. } | Request::Camera { .. } | Request::Peek { .. } | Request::FindFloats { .. })) => Response::Error { message: "подмены — в shim d3d12 (порт 47322)".into() },
             Err(e) => Response::Error { message: format!("неверный запрос: {e}") },
         };
         if write_message(&mut writer, &response).is_err() {

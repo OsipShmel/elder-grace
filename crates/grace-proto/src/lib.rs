@@ -22,6 +22,8 @@ pub enum Request {
     Camera { layout: CameraLayout },
     /// Отладка: прочитать `len` байт памяти игры по адресу (через ReadProcessMemory — безопасно).
     Peek { addr: u64, len: u32 },
+    /// Отладка: адреса подряд идущих f32, попадающих в диапазоны [min, max] (шаг 4 байта).
+    FindFloats { ranges: Vec<(f32, f32)>, limit: u32 },
 }
 
 /// Где в cbuffer'е камеры лежат поля (байтовые смещения от начала cbuffer'а).
@@ -70,6 +72,7 @@ pub enum Response {
     Bound(BoundReport),
     Camera(CameraReport),
     Peek { addr: u64, bytes: Vec<u8> },
+    Found { regions: usize, addrs: Vec<u64> },
     Error {
         message: String,
     },
@@ -119,6 +122,28 @@ pub struct CameraReport {
     /// Отладка: перспективные проекции где угодно в памяти (адрес, fovy°, P00/P11).
     #[serde(default)]
     pub projections: Vec<(u64, f32, f32)>,
+    /// Матрицы с тем же поворотом, что у первой камеры, но другим переносом (адрес, перенос) —
+    /// кандидаты в «мировую» камеру, если камера в cbuffer'е локальная.
+    #[serde(default)]
+    pub same_rotation: Vec<(u64, [f32; 3])>,
+}
+
+/// Перенос матрицы 4×4 по адресу, если её поворот совпадает с `rot` (столбцы по 3, по столбцам)
+/// с точностью 1e-4, а нижняя строка — (0, 0, 0, 1). Обе ориентации хранения.
+pub fn rotation_match(rot: &[f32; 9], f: &dyn Fn(usize) -> f32) -> Option<[f32; 3]> {
+    for transposed in [false, true] {
+        let m = |r: usize, c: usize| if transposed { f(r * 16 + c * 4) } else { f(c * 16 + r * 4) };
+        if (m(3, 3) - 1.0).abs() > 1e-4 || (0..3).any(|c| m(3, c).abs() > 1e-4) {
+            continue;
+        }
+        if (0..3).all(|c| (0..3).all(|r| (m(r, c) - rot[c * 3 + r]).abs() < 1e-4)) {
+            let t = [m(0, 3), m(1, 3), m(2, 3)];
+            if t.iter().all(|v| v.is_finite()) {
+                return Some(t);
+            }
+        }
+    }
+    None
 }
 
 /// Перспективная проекция по адресу (column_major или построчно): (fovy в градусах, P00/P11).
@@ -269,6 +294,21 @@ mod tests {
         write_message(&mut buf, &Request::Camera { layout: l }).unwrap();
         let mut r = io::BufReader::new(buf.as_slice());
         assert_eq!(read_message::<_, Request>(&mut r).unwrap(), Some(Request::Camera { layout: l }));
+    }
+
+    #[test]
+    fn rotation_match_finds_world_copy() {
+        let rot = [0.157, 0.0, 0.988, 0.0, 1.0, 0.0, -0.988, 0.0, 0.157];
+        let mut m = [0f32; 16];
+        for c in 0..3 {
+            for r in 0..3 {
+                m[c * 4 + r] = rot[c * 3 + r];
+            }
+        }
+        m[12..16].copy_from_slice(&[-113.9, 15.5, 13.0, 1.0]);
+        assert_eq!(rotation_match(&rot, &|o: usize| m[o / 4]), Some([-113.9, 15.5, 13.0]));
+        m[0] = 0.5;
+        assert_eq!(rotation_match(&rot, &|o: usize| m[o / 4]), None);
     }
 
     #[test]

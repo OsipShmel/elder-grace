@@ -68,6 +68,12 @@ enum Command {
         #[arg(default_value_t = 256)]
         len: u32,
     },
+    /// Отладка: найти в памяти игры подряд идущие f32 в диапазонах «min:max» (по одному на число)
+    FindFloats {
+        ranges: Vec<String>,
+        #[arg(long, default_value_t = 64)]
+        limit: u32,
+    },
     /// Подмены шейдеров в игре (shim d3d12, по умолчанию 127.0.0.1:47322)
     Overrides {
         #[arg(value_enum, default_value_t = Op::Status)]
@@ -146,7 +152,7 @@ impl Conn for Tcp {
 }
 
 fn connect(cli: &Cli) -> Result<Box<dyn Conn>> {
-    let d3d12 = matches!(cli.command, Command::Overrides { .. } | Command::Bound { .. } | Command::Camera { .. } | Command::Peek { .. }) && cli.socket.is_none();
+    let d3d12 = matches!(cli.command, Command::Overrides { .. } | Command::Bound { .. } | Command::Camera { .. } | Command::Peek { .. } | Command::FindFloats { .. }) && cli.socket.is_none();
     let tcp = cli
         .tcp
         .clone()
@@ -154,7 +160,7 @@ fn connect(cli: &Cli) -> Result<Box<dyn Conn>> {
         .or_else(|| d3d12.then(|| SHIM_D3D12_ADDR.to_string()));
     if let Some(addr) = tcp {
         let s = TcpStream::connect(&addr).with_context(|| format!("нет соединения с {addr} — игра с shim запущена?"))?;
-        s.set_read_timeout(Some(Duration::from_secs(60)))?;
+        s.set_read_timeout(Some(Duration::from_secs(300)))?;
         return Ok(Box::new(Tcp(BufReader::new(s))));
     }
     let socket = cli.socket.clone().unwrap_or_else(grace_core::paths::control_socket);
@@ -223,6 +229,12 @@ fn print(cli: &Cli, response: &Response) -> Result<()> {
                     c.position[0], c.position[1], c.position[2], fwd[0], fwd[1], fwd[2], fovy.to_degrees()
                 );
             }
+            if !r.same_rotation.is_empty() {
+                println!("матриц с тем же поворотом и другим переносом: {}", r.same_rotation.len());
+                for (addr, t) in &r.same_rotation {
+                    println!("  {addr:#x} · перенос ({:.2}, {:.2}, {:.2})", t[0], t[1], t[2]);
+                }
+            }
             if !r.projections.is_empty() {
                 println!("перспективных проекций в памяти: {} (первые)", r.projections.len());
                 for (addr, fovy, aspect) in r.projections.iter().take(12) {
@@ -235,6 +247,12 @@ fn print(cli: &Cli, response: &Response) -> Result<()> {
             for (i, row) in bytes.as_chunks::<16>().0.iter().enumerate() {
                 let f: Vec<String> = row.as_chunks::<4>().0.iter().map(|b| format!("{:>12.4}", f32::from_le_bytes(*b))).collect();
                 println!("  +{:#06x} {}", i * 16, f.join(" "));
+            }
+        }
+        Response::Found { regions, addrs } => {
+            println!("участков {regions}, найдено {}", addrs.len());
+            for a in addrs {
+                println!("  {a:#x}");
             }
         }
         Response::Error { message } => bail!("ошибка: {message}"),
@@ -266,6 +284,16 @@ fn main() -> Result<()> {
         Command::Peek { ref addr, len } => {
             let a = u64::from_str_radix(addr.trim_start_matches("0x"), 16).with_context(|| format!("адрес {addr}"))?;
             print(&cli, &ask(&mut conn, &Request::Peek { addr: a, len })?)
+        }
+        Command::FindFloats { ref ranges, limit } => {
+            let ranges = ranges
+                .iter()
+                .map(|r| {
+                    let (lo, hi) = r.split_once(':').with_context(|| format!("диапазон «{r}»: нужно min:max"))?;
+                    Ok((lo.parse::<f32>()?, hi.parse::<f32>()?))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            print(&cli, &ask(&mut conn, &Request::FindFloats { ranges, limit })?)
         }
         Command::Overrides { op } => print(&cli, &ask(&mut conn, &Request::Overrides { op: op.into() })?),
         Command::Watch => loop {

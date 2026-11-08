@@ -4,6 +4,7 @@
 pub mod dds;
 pub mod gpu;
 pub mod math;
+pub mod compare;
 pub mod viewer;
 
 pub use dds::TextureData;
@@ -112,6 +113,17 @@ impl Camera {
         // Ближняя плоскость — от расстояния до цели: и обзор сцены сверху, и шаг вплотную к стене.
         let near = (self.distance * 0.01).clamp(0.02, self.near.max(0.02));
         math::mul(&math::perspective(self.fovy, aspect, near, far), &math::look_at(self.eye(), self.target, [0.0, 1.0, 0.0]))
+    }
+
+    /// Камера из положения глаза и направления взгляда (мир просмотра, правая СК).
+    pub fn looking(eye: [f32; 3], forward: [f32; 3], fovy: f32) -> Self {
+        let f = math::normalize(forward);
+        let distance = 1.0;
+        let target = [eye[0] + f[0] * distance, eye[1] + f[1] * distance, eye[2] + f[2] * distance];
+        // eye − target = −f·d = d·(cos p·sin y, sin p, cos p·cos y).
+        let yaw = (-f[0]).atan2(-f[2]);
+        let pitch = (-f[1]).clamp(-1.0, 1.0).asin();
+        Self { target, distance, yaw, pitch, fovy, near: 0.05, far: 5000.0 }
     }
 
     /// Сдвиг цели в осях камеры: вперёд (по горизонтали), вправо, вверх.

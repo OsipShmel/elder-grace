@@ -5,7 +5,7 @@
 use anyhow::{Context, Result, bail};
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::ProtocolObject;
-use objc2_app_kit::NSView;
+use objc2_app_kit::{NSView, NSWindowCollectionBehavior};
 use objc2_core_foundation::CGSize;
 use objc2_metal::MTLCommandBuffer;
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
@@ -33,6 +33,7 @@ pub type CameraDriver = Box<dyn FnMut(&mut Camera) -> Option<String>>;
 struct Viewer {
     title: String,
     driver: Option<CameraDriver>,
+    on_top: bool,
     gpu: Gpu,
     scene: GpuScene,
     camera: Camera,
@@ -48,7 +49,16 @@ struct Viewer {
 
 impl Viewer {
     fn init(&mut self, el: &ActiveEventLoop) -> Result<()> {
-        let window = el.create_window(Window::default_attributes().with_title(&self.title).with_inner_size(LogicalSize::new(1280.0, 800.0)))?;
+        let mut attrs = Window::default_attributes().with_title(&self.title).with_inner_size(LogicalSize::new(1280.0, 800.0));
+        if self.on_top {
+            // A small window in the top-right corner, to watch next to a (fullscreen) game.
+            attrs = attrs.with_inner_size(LogicalSize::new(640.0, 360.0));
+            if let Some(m) = el.primary_monitor() {
+                let size = m.size().to_logical::<f64>(m.scale_factor());
+                attrs = attrs.with_position(winit::dpi::LogicalPosition::new(size.width - 660.0, 40.0));
+            }
+        }
+        let window = el.create_window(attrs)?;
         let RawWindowHandle::AppKit(h) = window.window_handle()?.as_raw() else { bail!("expected an AppKit handle") };
         // SAFETY: ns_view lives as long as the window; the window outlives the layer (field order of Live).
         let view: &NSView = unsafe { h.ns_view.cast().as_ref() };
@@ -56,6 +66,13 @@ impl Viewer {
         layer.setDevice(Some(&self.gpu.device));
         layer.setPixelFormat(COLOR_FORMAT);
         layer.setFramebufferOnly(true);
+        if self.on_top
+            && let Some(w) = view.window()
+        {
+            // Above other apps, including a fullscreen game in its own Space.
+            w.setLevel(objc2_app_kit::NSStatusWindowLevel);
+            w.setCollectionBehavior(NSWindowCollectionBehavior::CanJoinAllSpaces | NSWindowCollectionBehavior::FullScreenAuxiliary);
+        }
         view.setWantsLayer(true);
         view.setLayer(Some(&layer));
         let size = window.inner_size();
@@ -170,14 +187,15 @@ impl ApplicationHandler for Viewer {
 
 /// Opens a window and runs the loop until it is closed.
 pub fn run(title: &str, gpu: Gpu, scene: GpuScene, camera: Camera) -> Result<()> {
-    run_with(title, gpu, scene, camera, None)
+    run_with(title, gpu, scene, camera, None, false)
 }
 
-/// Like `run`, with a camera driver called every frame.
-pub fn run_with(title: &str, gpu: Gpu, scene: GpuScene, camera: Camera, driver: Option<CameraDriver>) -> Result<()> {
+/// Like `run`, with a camera driver called every frame; `on_top`: a small window that floats
+/// above other apps (to watch it next to the game).
+pub fn run_with(title: &str, gpu: Gpu, scene: GpuScene, camera: Camera, driver: Option<CameraDriver>, on_top: bool) -> Result<()> {
     let el = EventLoop::new().context("event loop")?;
     el.set_control_flow(ControlFlow::Poll);
-    let mut v = Viewer { title: title.to_owned(), driver, gpu, scene, camera, live: None, dragging: false, last: None, modifiers: ModifiersState::empty(), keys: Default::default(), last_frame: None, error: None };
+    let mut v = Viewer { title: title.to_owned(), driver, on_top, gpu, scene, camera, live: None, dragging: false, last: None, modifiers: ModifiersState::empty(), keys: Default::default(), last_frame: None, error: None };
     el.run_app(&mut v)?;
     v.error.map_or(Ok(()), Err)
 }

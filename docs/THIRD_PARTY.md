@@ -12,6 +12,20 @@
 | clap, anyhow, thiserror | 4.x / 1.x / 2.x | MIT OR Apache-2.0 | CLI, ошибки | везде |
 | quick-xml | 0.41 | MIT (cargo info, 2026-11-08) | Разбор XML-выгрузки xctrace | `grace-bench` |
 
+Зависимости игрового репозитория `grace-eldenring` (свой workspace, MIT):
+
+| Крейт | Версия | Лицензия | Зачем | Где |
+|---|---|---|---|---|
+| num-bigint, num-traits | 0.5 / 0.2 | MIT OR Apache-2.0 | RSA (`c^e mod n`) для заголовков `.bhd` | `er-data` |
+| base64 | 0.22 | MIT OR Apache-2.0 | PEM-ключи из exe пользователя | `er-data` |
+| aes | 0.9 | MIT OR Apache-2.0 | AES-128-ECB диапазонов файлов `.bdt` | `er-data` |
+| oozextract | 0.5.7 | MIT (crates.io; в пакете нет файла LICENSE — порт `ooz`, происхождение кода перепроверить до распространения) | Oodle Kraken (DCX/KRAK) без Windows-DLL | `er-data` |
+| miniz_oxide | 0.9 | MIT OR Zlib OR Apache-2.0 | DCX/DFLT | `er-data` |
+| ruzstd | 0.9 | MIT | DCX/ZSTD | `er-data` |
+| fromsoft-formats | 0.17 | **GPL-3.0-or-later** | только эталон для дифференциальных тестов (dev-dependency, в продукт не входит) — пока не подключён | план |
+
+Ключи RSA и любые данные игры в репозитории не хранятся: ключи читаются из `eldenring.exe` пользователя на лету.
+
 Транзитивные зависимости: смотреть `cargo metadata`; перед первым распространением сборки прогнать проверку лицензий (`cargo deny` или аналог).
 
 Инструменты конвейера шейдеров (только локально, не распространяются):

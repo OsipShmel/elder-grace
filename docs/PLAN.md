@@ -10,7 +10,7 @@ The agent reads this file at the start of every session and writes progress to `
 
 Every phase ends with a **milestone**: something the user runs themselves, with a measurable criterion. Phases 1, 3 and 5 are followed by **forks**: decisions made by numbers, not by faith.
 
-**Status (2026-11-08):** phases 0–2 done; phase 3 done as tooling (the game is CPU-bound, see fork 1); phases 4–5 done as path A (milestones M1–M6, data layer in `grace-eldenring/crates/er-data`); fork 3 decided: **C2-b**. Current: **Phase R** (restructuring), then **Phase 6: C2-b**.
+**Status (2026-11-08):** phases 0–2 done; phase 3 done as tooling (the game is CPU-bound, see fork 1); phases 4–5 done as path A (milestones M1–M6, data layer in `grace-eldenring/crates/er-data`); fork 3 decided: **C2-b**. Phase R (restructuring) done. Next: **Phase 6: C2-b**, on the user's go.
 
 ---
 
@@ -125,14 +125,14 @@ Tasks:
 
 ---
 
-## Phase R: Restructuring (before C2-b, in progress)
+## Phase R: Restructuring (done 2026-11-08)
 
 **Why:** Elder Grace is a framework and a game port is its consumer (ADR 0005). Cross-cutting changes went through same-named branches in two repositories, linked by relative paths.
 
 Tasks (in order):
 1. Merge `feat/game-camera` in both repositories. *Done 2026-11-08.*
 2. Pull the engine in through a **cargo git dependency** on a version tag + a local `[patch]` to the sibling checkout for joint development (ADR 0005).
-3. Remotes for `elder-grace` and `grace-eldenring` (`github.com/OsipShmel/*`, public; the user creates and pushes, the agent prepares).
+3. Remotes: `github.com/OsipShmel/elder-grace` and `github.com/OsipShmel/grace-ER` (public; created and pushed by the user). *Done.*
 4. `elder-grace` as a library: public crate boundaries (`grace-core`, `grace-proto`, `grace-render`), versions/tags, README (what it is, architecture, how to depend on it, requirements), CHANGELOG. Game knowledge only in game repositories.
 5. `grace-eldenring`: README (what it is, how to build and run the port, what the user must provide: their own copy of the game), a dependency on an engine version.
 6. **English:** all docs (including `CLAUDE.md`, ADRs, specs/plans, `FORMATS.md`, `BASELINE.md`), comments, error/log/CLI messages, commit messages from now on. Conversation with the user stays in Russian.

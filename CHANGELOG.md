@@ -11,3 +11,4 @@ First tagged version, consumed by `grace-eldenring` through a cargo git dependen
 - `grace-render`: `Scene`/`MeshData`/`Instance`, Metal renderer with BCn textures, instancing, alpha test, memoryless depth; `Camera` (orbit, `looking`, fly); `viewer::run`; `Gpu::capture_png`; `compare::side_by_side`; DDS parsing.
 - Tooling (not versioned for consumers): d3d12/dxgi shims with live shader overrides and memory queries, compat shims for GPTK's Wine, `grace-ctl`, `grace-shader`, `grace-bench`, `grace-irconv`, `cargo xtask` oracle/shaders/overrides/bench/trace.
 - All docs, comments and messages in English.
+- License: Apache-2.0 (changed from MIT by the owner after the first push).

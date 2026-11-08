@@ -4,9 +4,9 @@ Newest entries on top. Each entry: what was done, how it was checked, numbers, w
 
 ## ▶ Current state (summary as of 2026-11-08, read first)
 
-**Where we are:** path A (native data viewer) is complete, 6/6 milestones. **Now:** Phase R (repository restructuring, READMEs, English), branch `chore/phase-r` in both repositories. **Next:** Phase 6 **C2-b** (native rendering driven by the live game's state). Plan: `docs/PLAN.md` ("Phase R", "Phase 6: C2-b"); decisions: ADR 0004 (C2-b), ADR 0005 (engine as a framework, cargo git dependency + `[patch]`). **Do not start C2-b without the user's go.**
+**Where we are:** path A (native data viewer) is complete, 6/6 milestones; **Phase R is complete** (both repositories public on GitHub, everything in English, the port depends on the engine tag `v0.1.0`). **Next:** Phase 6 **C2-b** (native rendering driven by the live game's state), starting with milestone **B0: live camera mirror** (see `docs/PLAN.md`, "Phase 6: C2-b"). Decisions: ADR 0004 (C2-b), ADR 0005 (engine as a framework, cargo git dependency + `[patch]`). **Do not start C2-b without the user's go.**
 
-**Layout:** `ProjectPort/` (not git) → `elder-grace/` (engine, git, remote `github.com/OsipShmel/elder-grace`), `grace-eldenring/` (game, git, remote `github.com/OsipShmel/grace-eldenring`), `.local/` (data, prefix, caches, frames; not git). Pristine Elden Ring 1.17.2: `~/Games/EldenRing/Game` (read-only); sandbox: `.local/game_bean/elden_ring`.
+**Layout:** `ProjectPort/` (not git) → `elder-grace/` (engine, git, remote `git@github.com:OsipShmel/elder-grace.git`, Apache-2.0), `grace-eldenring/` (game, git, remote `git@github.com:OsipShmel/grace-ER.git`, MIT; the folder name differs from the repository name), `ProjectPort/.cargo/config.toml` (local `[patch]` → `elder-grace/crates/*`, not in git), `.local/` (data, prefix, caches, frames; not git). Both `main` branches are pushed; engine tag `v0.1.0` is on GitHub. Pristine Elden Ring 1.17.2: `~/Games/EldenRing/Game` (read-only); sandbox: `.local/game_bean/elden_ring`.
 
 **What works (verified):**
 - **Oracle** on GPTK 3.0-3 in one command: `cargo xtask oracle setup|steam [--ui]|run [--label L] [--no-shim] [--no-overrides] [--no-esync]|status|kill|shot <png>`. esync on by default (+~20% in the open world). Steam logs in by itself with the saved session.
@@ -40,7 +40,7 @@ Newest entries on top. Each entry: what was done, how it was checked, numbers, w
 
 **Checked:** `cargo test --workspace` green, `cargo clippy --workspace --all-targets` clean, Windows clippy of the shims clean, `cargo xtask shim --release` builds. Clean clones of both branches outside ProjectPort (GitHub URL redirected to the local repo with `url.insteadOf`): engine 20 tests, clippy 0; the port fetches the engine by tag `v0.1.0` (tag commit), 22 tests (without the install and with `GRACE_ROOT` on real files), clippy 0; `er-viewer m18_00_00_00 --map --capture` renders the map (1.0 s, 11 054 instances). `cargo xtask oracle status` works. **Not checked:** `oracle run` (needs the game started).
 
-**Next (user):** create both GitHub repositories (public), merge `chore/phase-r` into `main` in both, push `main` and the tag `v0.1.0` of the engine first, then the port. After that Phase R is done; C2-b starts on the user's go.
+**Finished:** `chore/phase-r` merged into `main` in both repositories (with the user's permission); the user created the repositories (`OsipShmel/elder-grace`, `OsipShmel/grace-ER`) and pushed `main` and the tag `v0.1.0`; the user switched the engine license to Apache-2.0 on GitHub (metadata aligned afterwards; the port stays MIT). Commit hashes in this entry predate a later history rewrite and may not match. Phase R is done; C2-b starts on the user's go.
 
 ---
 

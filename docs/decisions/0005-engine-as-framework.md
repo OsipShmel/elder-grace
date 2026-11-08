@@ -10,7 +10,7 @@ Until now (ADR 0003) the two repositories sat side by side in `ProjectPort/` and
 ## Decision
 
 1. `elder-grace` has its own remote (`https://github.com/OsipShmel/elder-grace`, public) and is shaped as a framework: public `grace-*` library crates with clear boundaries and versions (`vX.Y.Z` tags), a README ("what it is and how to depend on it"), a CHANGELOG.
-2. `grace-eldenring` has its own remote (`https://github.com/OsipShmel/grace-eldenring`, public) and consumes the framework: a README ("how to build the port"), dependencies on engine versions.
+2. `grace-eldenring` has its own remote (`https://github.com/OsipShmel/grace-ER`, public; checked out locally as `grace-eldenring/`) and consumes the framework: a README ("how to build the port"), dependencies on engine versions.
 3. **Language:** documentation, documents for AI agents (`CLAUDE.md` and others), code comments and messages (errors, logs, CLI), and commit messages are **in English**. Conversation with the user stays in Russian.
 
 ## How the engine is pulled in: cargo git + `[patch]`

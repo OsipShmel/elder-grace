@@ -8,7 +8,7 @@ Translation layers (CrossOver, Wine, GPTK/D3DMetal) run the whole game under Ros
 - **Render natively** (C2-b, current direction): a native Metal renderer draws the game world from the game's own files, driven by the live game's camera and scene state, while the original game logic keeps running.
 - **Reimplement** (mode A, long term): a native runtime that reads the game data without running the original executable.
 
-The first target is Elden Ring, ported in a separate repository: [grace-eldenring](https://github.com/OsipShmel/grace-eldenring).
+The first target is Elden Ring, ported in a separate repository: [grace-ER](https://github.com/OsipShmel/grace-ER).
 
 > Status: early research project. APIs change between minor versions. macOS on Apple Silicon only.
 
@@ -94,4 +94,4 @@ What to run comes from `[games.<id>]` in `config/local.toml`. Logins are always 
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+Apache-2.0, see [LICENSE](LICENSE).

@@ -12,7 +12,7 @@ Everything taken **as code** (dependencies, forks, ported fragments) goes here, 
 | clap, anyhow, thiserror | 4.x / 1.x / 2.x | MIT OR Apache-2.0 | CLI, errors | everywhere |
 | quick-xml | 0.41 | MIT (cargo info, 2026-11-08) | Parsing xctrace XML exports | `grace-bench` |
 
-Dependencies of the game repository `grace-eldenring` (its own workspace, MIT):
+Dependencies of the game repository `grace-eldenring` (its own workspace, MIT; the engine itself is Apache-2.0):
 
 | Crate | Version | License | Why | Where |
 |---|---|---|---|---|

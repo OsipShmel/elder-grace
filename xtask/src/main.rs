@@ -7,7 +7,8 @@
 //!   `--reload` — сразу перезагрузить их в запущенной игре (shim d3d12, TCP 47322).
 //! `cargo xtask shader <хеш>.<стадия> [--ir]` — имя, сигнатуры, ресурсы шейдера из дампа; `--ir` — дизассемблер в `.local`.
 //! `cargo xtask bench <журнал|метка> [<журнал2|метка2>] [--skip сек] [--game игра]` — отчёт по времени кадра.
-//! `cargo xtask trace [--seconds N] [--label L] [--game игра]` — Metal System Trace запущенной игры + вердикт CPU/GPU.
+//! `cargo xtask trace [--seconds N] [--label L] [--game игра] [--template T] [--instrument I]…` — трейс запущенной игры;
+//!   по умолчанию Metal System Trace + вердикт CPU/GPU; `--template "System Trace"` — состояния потоков (ожидания).
 
 mod oracle;
 mod overrides;
@@ -270,14 +271,21 @@ fn trace(args: &[String]) -> Result<()> {
     if out.exists() {
         bail!("{} уже есть — задай другую --label", out.display());
     }
-    println!("запись Metal System Trace: {exe} (pid {pid}), {seconds} с → {}", out.display());
-    let status = Command::new("xcrun")
-        .args(["xctrace", "record", "--template", "Metal System Trace", "--attach", &pid, "--time-limit", &format!("{seconds}s", seconds = seconds.trim_end_matches('s')), "--output"])
-        .arg(&out)
-        .stdout(std::process::Stdio::null())
-        .status()?;
+    let template = opt("--template").unwrap_or_else(|| "Metal System Trace".into());
+    let instruments: Vec<&String> = args.iter().enumerate().filter(|(_, a)| *a == "--instrument").filter_map(|(i, _)| args.get(i + 1)).collect();
+    println!("запись «{template}»: {exe} (pid {pid}), {seconds} с → {}", out.display());
+    let mut cmd = Command::new("xcrun");
+    cmd.args(["xctrace", "record", "--template", &template, "--attach", &pid, "--time-limit", &format!("{seconds}s", seconds = seconds.trim_end_matches('s'))]);
+    for i in &instruments {
+        cmd.args(["--instrument", i.as_str()]);
+    }
+    let status = cmd.arg("--output").arg(&out).stdout(std::process::Stdio::null()).status()?;
     if !status.success() {
         bail!("xctrace record завершился с ошибкой");
+    }
+    if template != "Metal System Trace" {
+        println!("трейс записан; разбор вердикта — только для Metal System Trace (таблицы: xcrun xctrace export --input {} --toc)", out.display());
+        return Ok(());
     }
     let out_s = out.to_string_lossy().into_owned();
     cargo(&["run", "-q", "--release", "-p", "grace-bench", "--", "trace", &out_s, "--pid", &pid])

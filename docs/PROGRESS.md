@@ -34,7 +34,13 @@ Newest entries on top. Each entry: what was done, how it was checked, numbers, w
 - Engine code translated to English: comments, doc comments, error/log/CLI messages, manifests. `xtask` no longer defaults to `eldenring`: the game comes from `GRACE_GAME` or the only `[games.*]` entry; `oracle shot` reads `window_title` from the game config (new `GameConfig::window_title`). Windows-target clippy fixed (crash-probe, compat-realtime).
 - Engine docs translated (ADRs 0001–0005, ARCHITECTURE, PLAN, REFERENCES, THIRD_PARTY, games/README, this log).
 
-**Checked:** `cargo test --workspace` green, `cargo clippy --workspace --all-targets` clean, Windows clippy of the shims clean, `cargo xtask shim --release` builds.
+- Engine: README (framework intro, crates, how a port depends on it), LICENSE (MIT), CHANGELOG, `repository` fields; local tag `v0.1.0` on `9400c1a` (not pushed).
+- Port: `grace-core/proto/render` via `git = "https://github.com/OsipShmel/elder-grace", tag = "v0.1.0"`; local co-development through `ProjectPort/.cargo/config.toml` (`[patch]`, outside git; no unused-patch warning in the engine workspace). README, LICENSE, CLAUDE.md, all docs and code in English. `Cargo.lock` is committed in the patched (local) form: with the patch active cargo rewrites a git-pinned lock anyway; the tag in `Cargo.toml` is the pin.
+- Public-repo hygiene: the English docs no longer mention an unrelated installer copy or Steam session file details; the Russian originals remain in older commits.
+
+**Checked:** `cargo test --workspace` green, `cargo clippy --workspace --all-targets` clean, Windows clippy of the shims clean, `cargo xtask shim --release` builds. Clean clones of both branches outside ProjectPort (GitHub URL redirected to the local repo with `url.insteadOf`): engine 20 tests, clippy 0; the port fetches the engine by tag `v0.1.0` (`#9400c1a`), 22 tests (without the install and with `GRACE_ROOT` on real files), clippy 0; `er-viewer m18_00_00_00 --map --capture` renders the map (1.0 s, 11 054 instances). `cargo xtask oracle status` works. **Not checked:** `oracle run` (needs the game started).
+
+**Next (user):** create both GitHub repositories (public), merge `chore/phase-r` into `main` in both, push `main` and the tag `v0.1.0` of the engine first, then the port. After that Phase R is done; C2-b starts on the user's go.
 
 ---
 

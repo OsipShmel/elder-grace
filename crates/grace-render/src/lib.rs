@@ -1,10 +1,12 @@
 //! Нативный рендер Elder Grace (Metal, arm64). Не знает об играх: на вход — меши в мировых
 //! координатах, на выход — окно с орбитальной камерой или PNG-кадр.
 
+pub mod dds;
 pub mod gpu;
 pub mod math;
 pub mod viewer;
 
+pub use dds::TextureData;
 pub use gpu::{Gpu, GpuScene};
 
 /// Меш в мировых координатах: треугольники списком.
@@ -12,14 +14,19 @@ pub use gpu::{Gpu, GpuScene};
 pub struct MeshData {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
+    /// UV на вершину (может быть пустым — тогда без текстуры).
+    pub uvs: Vec<[f32; 2]>,
     pub indices: Vec<u32>,
-    /// Цвет (линейный); `None` — из палитры по номеру меша.
+    /// Цвет без текстуры (линейный); `None` — из палитры по номеру меша.
     pub color: Option<[f32; 4]>,
+    /// Индекс в `Scene::textures` — альбедо.
+    pub texture: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Scene {
     pub meshes: Vec<MeshData>,
+    pub textures: Vec<TextureData>,
 }
 
 impl Scene {

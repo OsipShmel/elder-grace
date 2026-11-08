@@ -13,9 +13,11 @@ use objc2_metal::{
     MTLCreateSystemDefaultDevice, MTLDepthStencilDescriptor, MTLDepthStencilState, MTLDevice, MTLIndexType,
     MTLLibrary, MTLLoadAction, MTLOrigin, MTLPixelFormat, MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder,
     MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLResourceOptions, MTLSize,
+    MTLSamplerAddressMode, MTLSamplerDescriptor, MTLSamplerMinMagFilter, MTLSamplerMipFilter, MTLSamplerState,
     MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
 };
 
+use crate::dds::{Format, TextureData};
 use crate::{Camera, Scene};
 
 pub const COLOR_FORMAT: MTLPixelFormat = MTLPixelFormat::BGRA8Unorm_sRGB;
@@ -30,19 +32,23 @@ struct Uniforms {
     view_proj: [f32; 16],
     light: [f32; 4],
     color: [f32; 4],
+    params: [f32; 4],
 }
 
 struct GpuMesh {
     positions: Buffer,
     normals: Buffer,
+    uvs: Buffer,
     indices: Buffer,
     index_count: usize,
     color: [f32; 4],
+    texture: Option<usize>,
 }
 
 /// Сцена в памяти GPU (unified memory: буферы Shared, без копий через blit).
 pub struct GpuScene {
     meshes: Vec<GpuMesh>,
+    textures: Vec<Texture>,
 }
 
 pub struct Gpu {
@@ -50,6 +56,48 @@ pub struct Gpu {
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     pipeline: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     depth_state: Retained<ProtocolObject<dyn MTLDepthStencilState>>,
+    sampler: Retained<ProtocolObject<dyn MTLSamplerState>>,
+    /// 1×1 белая — привязывается, когда у меша нет текстуры.
+    white: Texture,
+}
+
+fn pixel_format(f: Format) -> MTLPixelFormat {
+    match f {
+        Format::Bc1 => MTLPixelFormat::BC1_RGBA,
+        Format::Bc1Srgb => MTLPixelFormat::BC1_RGBA_sRGB,
+        Format::Bc2 => MTLPixelFormat::BC2_RGBA,
+        Format::Bc2Srgb => MTLPixelFormat::BC2_RGBA_sRGB,
+        Format::Bc3 => MTLPixelFormat::BC3_RGBA,
+        Format::Bc3Srgb => MTLPixelFormat::BC3_RGBA_sRGB,
+        Format::Bc4 => MTLPixelFormat::BC4_RUnorm,
+        Format::Bc5 => MTLPixelFormat::BC5_RGUnorm,
+        Format::Bc6hUf => MTLPixelFormat::BC6H_RGBUfloat,
+        Format::Bc7 => MTLPixelFormat::BC7_RGBAUnorm,
+        Format::Bc7Srgb => MTLPixelFormat::BC7_RGBAUnorm_sRGB,
+        Format::Rgba8 => MTLPixelFormat::RGBA8Unorm,
+        Format::Rgba8Srgb => MTLPixelFormat::RGBA8Unorm_sRGB,
+        Format::Bgra8 => MTLPixelFormat::BGRA8Unorm,
+        Format::Bgra8Srgb => MTLPixelFormat::BGRA8Unorm_sRGB,
+    }
+}
+
+/// Текстура со всеми уровнями мипов как есть (BCn без перекодирования).
+fn texture(device: &Device, t: &TextureData) -> Result<Texture> {
+    // SAFETY: формат и размеры валидны.
+    let td = unsafe { MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(pixel_format(t.format), t.width, t.height, false) };
+    // SAFETY: число уровней не больше, чем допускает размер (уровни взяты из DDS, ≥ 1).
+    unsafe { td.setMipmapLevelCount(t.mips.len()) };
+    td.setUsage(MTLTextureUsage::ShaderRead);
+    let tex = device.newTextureWithDescriptor(&td).context("не создаётся текстура")?;
+    let (mut w, mut h) = (t.width, t.height);
+    for (level, bytes) in t.mips.iter().enumerate() {
+        let (row, _) = t.format.level_size(w, h);
+        let region = MTLRegion { origin: MTLOrigin { x: 0, y: 0, z: 0 }, size: MTLSize { width: w, height: h, depth: 1 } };
+        // SAFETY: bytes — ровно один уровень этого размера (проверено при разборе DDS).
+        unsafe { tex.replaceRegion_mipmapLevel_withBytes_bytesPerRow(region, level, NonNull::new(bytes.as_ptr() as *mut c_void).context("пустой уровень")?, row) };
+        (w, h) = ((w / 2).max(1), (h / 2).max(1));
+    }
+    Ok(tex)
 }
 
 fn buffer<T: Copy>(device: &Device, data: &[T]) -> Result<Buffer> {
@@ -86,7 +134,16 @@ impl Gpu {
         ds.setDepthCompareFunction(MTLCompareFunction::Less);
         ds.setDepthWriteEnabled(true);
         let depth_state = device.newDepthStencilStateWithDescriptor(&ds).context("не создаётся состояние глубины")?;
-        Ok(Self { device, queue, pipeline, depth_state })
+        let sd = MTLSamplerDescriptor::new();
+        sd.setMinFilter(MTLSamplerMinMagFilter::Linear);
+        sd.setMagFilter(MTLSamplerMinMagFilter::Linear);
+        sd.setMipFilter(MTLSamplerMipFilter::Linear);
+        sd.setSAddressMode(MTLSamplerAddressMode::Repeat);
+        sd.setTAddressMode(MTLSamplerAddressMode::Repeat);
+        sd.setMaxAnisotropy(8);
+        let sampler = device.newSamplerStateWithDescriptor(&sd).context("не создаётся сэмплер")?;
+        let white = texture(&device, &TextureData { format: Format::Rgba8, width: 1, height: 1, mips: vec![vec![255; 4]] })?;
+        Ok(Self { device, queue, pipeline, depth_state, sampler, white })
     }
 
     pub fn device_name(&self) -> String {
@@ -100,16 +157,20 @@ impl Gpu {
             .enumerate()
             .filter(|(_, m)| !m.indices.is_empty() && !m.positions.is_empty())
             .map(|(i, m)| {
+                let uvs = if m.uvs.len() == m.positions.len() { m.uvs.clone() } else { vec![[0.0; 2]; m.positions.len()] };
                 Ok(GpuMesh {
                     positions: buffer(&self.device, &m.positions)?,
                     normals: buffer(&self.device, &m.normals)?,
+                    uvs: buffer(&self.device, &uvs)?,
                     indices: buffer(&self.device, &m.indices)?,
                     index_count: m.indices.len(),
                     color: m.color.unwrap_or_else(|| palette(i)),
+                    texture: m.texture.filter(|&t| t < scene.textures.len() && m.uvs.len() == m.positions.len()),
                 })
             })
             .collect::<Result<_>>()?;
-        Ok(GpuScene { meshes })
+        let textures = scene.textures.iter().map(|t| texture(&self.device, t)).collect::<Result<_>>()?;
+        Ok(GpuScene { meshes, textures })
     }
 
     /// Текстура глубины под размер цели; Memoryless — живёт только в тайловой памяти GPU.
@@ -149,14 +210,20 @@ impl Gpu {
         let enc = cmd.renderCommandEncoderWithDescriptor(&pass)?;
         enc.setRenderPipelineState(&self.pipeline);
         enc.setDepthStencilState(Some(&self.depth_state));
+        // SAFETY: сэмплер жив, пока жив Gpu.
+        unsafe { enc.setFragmentSamplerState_atIndex(Some(&self.sampler), 0) };
         for m in &scene.meshes {
-            let u = Uniforms { view_proj, light: [light[0], light[1], light[2], 0.0], color: m.color };
+            let tex = m.texture.and_then(|t| scene.textures.get(t));
+            let has = if tex.is_some() { 1.0 } else { 0.0 };
+            let u = Uniforms { view_proj, light: [light[0], light[1], light[2], 0.0], color: m.color, params: [has, 0.0, 0.0, 0.0] };
             // SAFETY: буферы живы, пока жива сцена (до конца кадра — commit/wait снаружи);
             // uniforms копируются Metal сразу; индексы проверены парсером (< числа вершин).
             unsafe {
                 enc.setVertexBuffer_offset_atIndex(Some(&m.positions), 0, 0);
                 enc.setVertexBuffer_offset_atIndex(Some(&m.normals), 0, 1);
-                enc.setVertexBytes_length_atIndex(NonNull::from(&u).cast(), size_of::<Uniforms>(), 2);
+                enc.setVertexBuffer_offset_atIndex(Some(&m.uvs), 0, 2);
+                enc.setVertexBytes_length_atIndex(NonNull::from(&u).cast(), size_of::<Uniforms>(), 3);
+                enc.setFragmentTexture_atIndex(Some(tex.unwrap_or(&self.white)), 0);
                 enc.setFragmentBytes_length_atIndex(NonNull::from(&u).cast(), size_of::<Uniforms>(), 0);
                 enc.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(
                     MTLPrimitiveType::Triangle,

@@ -6,6 +6,7 @@ members = [
     "crates/grace-ctl",
     "crates/grace-app",
     "crates/grace-shader",
+    "crates/grace-render",
     "crates/grace-bench",
     "shim/graphics-proxy",
     "shim/dxgi-proxy",
@@ -23,6 +24,7 @@ default-members = [
     "crates/grace-ctl",
     "crates/grace-app",
     "crates/grace-shader",
+    "crates/grace-render",
     "crates/grace-bench",
     "xtask",
 ]
@@ -36,6 +38,7 @@ publish = false
 [workspace.dependencies]
 grace-core = { path = "crates/grace-core" }
 grace-proto = { path = "crates/grace-proto" }
+grace-render = { path = "crates/grace-render" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

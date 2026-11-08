@@ -610,6 +610,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "grace-render"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
+ "objc2-quartz-core 0.3.2",
+ "png",
+ "winit",
+]
+
+[[package]]
 name = "grace-shader"
 version = "0.1.0"
 dependencies = [

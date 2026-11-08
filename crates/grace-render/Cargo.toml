@@ -1,0 +1,21 @@
+[package]
+name = "grace-render"
+description = "Нативный рендер Elder Grace на Metal: меши, глубина, камера, окно, захват кадра (без знаний об играх)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+winit.workspace = true
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-app-kit.workspace = true
+objc2-metal.workspace = true
+objc2-quartz-core.workspace = true
+objc2-core-foundation = "0.3"
+png = "0.18"
+
+[lints]
+workspace = true

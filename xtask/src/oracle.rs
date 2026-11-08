@@ -7,6 +7,10 @@
 //!   прокси d3d12 дампит шейдеры в `.local/shaders/<игра>/`, прокси dxgi пишет время кадра
 //!   в `.local/frametimes/<игра>/<метка>.csv`).
 //! - `kill` — остановить все процессы префикса.
+//! - esync (`WINEESYNC=1`) включён по умолчанию для всех команд: без него каждое событие/мьютекс
+//!   Windows — запрос к wineserver (трейс 2026-11-08: 22% времени главного потока игры).
+//!   `--no-esync` — выключить (для A/B). Режим общий на префикс: wineserver, Steam и игра
+//!   должны быть в одном режиме, при смене — `oracle kill`.
 //! - `status` — процессы, вход в Steam, отчёты crash-probe.
 //!
 //! Что игра запускает и какой у неё App ID — берётся из `config/local.toml`
@@ -38,9 +42,17 @@ struct Ctx {
     game: GameConfig,
 }
 
+/// Включать ли esync в запускаемых процессах Wine (см. описание модуля).
+static ESYNC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+fn esync() -> bool {
+    ESYNC.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn main(args: &[String]) -> Result<()> {
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     let flag = |f: &str| args.iter().any(|a| a == f);
+    ESYNC.store(!flag("--no-esync"), std::sync::atomic::Ordering::Relaxed);
     // Первый позиционный аргумент после команды (значение --label не считается).
     let game_key = args
         .iter()
@@ -53,6 +65,7 @@ pub fn main(args: &[String]) -> Result<()> {
         "setup" => setup(&ctx(&game_key)?),
         "steam" => {
             let c = ctx(&game_key)?;
+            check_esync(&c)?;
             install_shims(&c)?;
             start_steam(&c, flag("--ui"))
         }
@@ -65,7 +78,7 @@ pub fn main(args: &[String]) -> Result<()> {
             Ok(())
         }
         "status" => status(&ctx(&game_key)?),
-        _ => bail!("использование: cargo xtask oracle setup|steam [--ui]|run [--no-hud] [--no-shim] [--no-overrides]|kill|status [игра]"),
+        _ => bail!("использование: cargo xtask oracle setup|steam [--ui]|run [--no-hud] [--no-shim] [--no-overrides]|kill|status [игра] [--no-esync]"),
     }
 }
 
@@ -82,7 +95,35 @@ fn wine(c: &Ctx, tool: &str, args: &[&str]) -> Command {
     // GRACE_WINEDEBUG — чтобы включить каналы Wine (например, +debugstr) без правки кода.
     let debug = std::env::var("GRACE_WINEDEBUG").unwrap_or_else(|_| "-all".into());
     cmd.args(args).env("WINEPREFIX", &c.prefix).env("WINEDEBUG", debug);
+    if esync() {
+        cmd.env("WINEESYNC", "1");
+    }
     cmd
+}
+
+/// Режим esync запущенного wineserver этого префикса (None — сервер не запущен).
+fn server_esync(c: &Ctx) -> Option<bool> {
+    let pids = Command::new("pgrep").args(["-f", "bin/wineserver"]).output().ok()?;
+    let prefix = format!("WINEPREFIX={}", c.prefix.display());
+    for pid in String::from_utf8_lossy(&pids.stdout).split_whitespace() {
+        let env = Command::new("ps").args(["-wwE", "-o", "command=", "-p", pid]).output().ok()?;
+        let env = String::from_utf8_lossy(&env.stdout).into_owned();
+        if env.split_whitespace().any(|w| w == prefix) {
+            return Some(env.split_whitespace().any(|w| w == "WINEESYNC=1"));
+        }
+    }
+    None
+}
+
+/// Wine отказывается запускать процесс, если его режим esync не совпадает с сервером.
+fn check_esync(c: &Ctx) -> Result<()> {
+    if let Some(server) = server_esync(c)
+        && server != esync()
+    {
+        let mode = |on: bool| if on { "с esync" } else { "без esync" };
+        bail!("wineserver префикса запущен {}, а запрошено {} — сначала cargo xtask oracle kill", mode(server), mode(esync()));
+    }
+    Ok(())
 }
 
 fn run_ok(mut cmd: Command, what: &str) -> Result<()> {
@@ -230,6 +271,8 @@ struct RunOpts {
 
 fn run(c: &Ctx, opts: RunOpts) -> Result<()> {
     let RunOpts { hud, shim, overrides, label } = opts;
+    check_esync(c)?;
+    println!("esync: {}", if esync() { "включён" } else { "выключен (--no-esync)" });
     install_shims(c)?;
     // Без shim: убираем наш d3d12.dll из песочницы — override native,builtin откатывается
     // на builtin D3DMetal. dxgi-прокси оставляем: он только меряет время кадра,
@@ -283,6 +326,10 @@ fn status(c: &Ctx) -> Result<()> {
     println!("префикс: {}", c.prefix.display());
     let procs = prefix_processes(c);
     println!("процессов Wine: {}", procs.len());
+    match server_esync(c) {
+        Some(on) => println!("wineserver: {}", if on { "esync включён" } else { "esync выключен" }),
+        None => println!("wineserver: не запущен"),
+    }
     for p in procs.iter().filter(|p| p.contains(".exe") && !p.contains("system32")) {
         println!("  {}", p.split("preloader ").nth(1).unwrap_or(p));
     }

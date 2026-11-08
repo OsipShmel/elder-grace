@@ -20,6 +20,8 @@ pub enum Request {
     /// Камера из памяти процесса игры (shim d3d12). Раскладка cbuffer'а —
     /// знание об игре, поэтому приходит в запросе (`grace-<игра>/data/camera-layout.json`).
     Camera { layout: CameraLayout },
+    /// Отладка: прочитать `len` байт памяти игры по адресу (через ReadProcessMemory — безопасно).
+    Peek { addr: u64, len: u32 },
 }
 
 /// Где в cbuffer'е камеры лежат поля (байтовые смещения от начала cbuffer'а).
@@ -67,6 +69,7 @@ pub enum Response {
     Overrides(OverrideStatus),
     Bound(BoundReport),
     Camera(CameraReport),
+    Peek { addr: u64, bytes: Vec<u8> },
     Error {
         message: String,
     },
@@ -113,6 +116,25 @@ pub struct CameraReport {
     pub buffers: usize,
     pub bytes: u64,
     pub candidates: Vec<CameraSample>,
+    /// Отладка: перспективные проекции где угодно в памяти (адрес, fovy°, P00/P11).
+    #[serde(default)]
+    pub projections: Vec<(u64, f32, f32)>,
+}
+
+/// Перспективная проекция по адресу (column_major или построчно): (fovy в градусах, P00/P11).
+pub fn projection_at(f: &dyn Fn(usize) -> f32) -> Option<(f32, f32)> {
+    for transposed in [false, true] {
+        let m = |r: usize, c: usize| if transposed { f(r * 16 + c * 4) } else { f(c * 16 + r * 4) };
+        let (p00, p11, p32, p33) = (m(0, 0), m(1, 1), m(3, 2), m(3, 3));
+        let off_zero = [m(0, 1), m(1, 0), m(3, 0), m(3, 1)].iter().all(|v| v.abs() < 1e-6);
+        if p00 > 0.0 && p11 > 0.0 && (p32.abs() - 1.0).abs() < 1e-5 && p33.abs() < 1e-6 && off_zero && p00.is_finite() && p11.is_finite() {
+            let fovy = 2.0 * (1.0 / p11).atan();
+            if (0.17..2.62).contains(&fovy) {
+                return Some((fovy.to_degrees(), p00 / p11));
+            }
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -151,25 +173,42 @@ pub struct BoundShader {
 
 /// Проверка кандидата по раскладке; `f(off)` читает f32 по смещению от начала cbuffer'а.
 pub fn camera_at(layout: &CameraLayout, f: &dyn Fn(usize) -> f32) -> Option<CameraSample> {
+    // Шейдер объявляет матрицы column_major, но на стороне CPU игра может хранить их
+    // построчно — пробуем обе ориентации, на выходе всегда по столбцам.
+    camera_oriented(layout, f, false).or_else(|| camera_oriented(layout, f, true))
+}
+
+fn camera_oriented(layout: &CameraLayout, f: &dyn Fn(usize) -> f32, transposed: bool) -> Option<CameraSample> {
     let (pos, inv, proj) = (layout.position as usize, layout.inv_view as usize, layout.proj as usize);
     let position = [f(pos), f(pos + 4), f(pos + 8)];
     let len = position.iter().map(|v| v * v).sum::<f32>().sqrt();
     if !position.iter().all(|v| v.is_finite()) || len < 1e-3 || len > 1e6 {
         return None;
     }
-    // column_major: [r][c] по смещению c·16 + r·4; перенос — столбец 3.
-    let m = |base: usize, r: usize, c: usize| f(base + c * 16 + r * 4);
+    // [r][c]: по столбцам — смещение c·16 + r·4, построчно — r·16 + c·4.
+    let m = |base: usize, r: usize, c: usize| if transposed { f(base + r * 16 + c * 4) } else { f(base + c * 16 + r * 4) };
     let close = |a: f32, b: f32, eps: f32| (a - b).abs() <= eps;
     let eps = 1e-3 * (1.0 + len);
-    if !(0..3).all(|r| close(m(inv, r, 3), position[r], eps)) || !close(m(inv, 3, 3), 1.0, 1e-4) || !(0..3).all(|c| close(m(inv, 3, c), 0.0, 1e-4)) {
+    // Перенос «вид → мир» = положение камеры, либо 0 (рендер относительно камеры).
+    let absolute = (0..3).all(|r| close(m(inv, r, 3), position[r], eps));
+    let relative = (0..3).all(|r| close(m(inv, r, 3), 0.0, 1e-4));
+    if !(absolute || relative) || !close(m(inv, 3, 3), 1.0, 1e-4) || !(0..3).all(|c| close(m(inv, 3, c), 0.0, 1e-4)) {
         return None;
+    }
+    // Размер экрана (если задан): ширина и высота — правдоподобные целые пиксели.
+    if let Some(sc) = layout.screen {
+        let (w, h) = (f(sc as usize), f(sc as usize + 4));
+        let pixels = |v: f32| (64.0..=16384.0).contains(&v) && (v - v.round()).abs() < 1e-3;
+        if !pixels(w) || !pixels(h) {
+            return None;
+        }
     }
     // Перспектива: P[3][2] = ±1, P[3][3] = 0, P[0][0] и P[1][1] > 0.
     if !close(m(proj, 3, 2).abs(), 1.0, 1e-4) || !close(m(proj, 3, 3), 0.0, 1e-4) || m(proj, 0, 0) <= 0.0 || m(proj, 1, 1) <= 0.0 {
         return None;
     }
-    let read16 = |base: usize| -> [f32; 16] { std::array::from_fn(|k| f(base + k * 4)) };
-    let (inv_view, proj_m) = (read16(inv), read16(proj));
+    let canon = |base: usize| -> [f32; 16] { std::array::from_fn(|k| m(base, k % 4, k / 4)) };
+    let (inv_view, proj_m) = (canon(inv), canon(proj));
     // Не камера, если в матрицах NaN/бесконечность (и JSON такие числа не передаст).
     if !inv_view.iter().chain(&proj_m).all(|v| v.is_finite()) {
         return None;
@@ -179,6 +218,11 @@ pub fn camera_at(layout: &CameraLayout, f: &dyn Fn(usize) -> f32) -> Option<Came
     let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
     let (c0, c1, c2) = (col(0), col(1), col(2));
     if [c0, c1, c2].iter().any(|c| (dot(*c, *c) - 1.0).abs() > 1e-2) || [dot(c0, c1), dot(c0, c2), dot(c1, c2)].iter().any(|d| d.abs() > 1e-2) {
+        return None;
+    }
+    // Разумный угол обзора: 10°..150° (P[1][1] = ctg(fovy/2)).
+    let fovy = 2.0 * (1.0 / proj_m[5]).atan();
+    if !(0.17..2.62).contains(&fovy) {
         return None;
     }
     let screen = layout.screen.map(|s| std::array::from_fn(|k| f(s as usize + k * 4))).filter(|v: &[f32; 4]| v.iter().all(|x| x.is_finite()));
@@ -252,6 +296,7 @@ mod tests {
     fn camera_signature() {
         let layout = CameraLayout { position: 48, inv_view: 320, proj: 256, screen: Some(16), align: 256 };
         let mut cb = vec![0f32; 512 / 4];
+        cb[4..6].copy_from_slice(&[1728.0, 1117.0]);
         cb[12..15].copy_from_slice(&[10.0, 2.0, -5.0]);
         // inv_view: единичный поворот, перенос в столбце 3 (смещение 320 + 48).
         for (r, c) in [(0, 0), (1, 1), (2, 2), (3, 3)] {
@@ -264,6 +309,23 @@ mod tests {
         let f = |o: usize| cb[o / 4];
         let s = camera_at(&layout, &f).unwrap();
         assert_eq!(s.position, [10.0, 2.0, -5.0]);
+        // Та же камера, но матрицы построчно: тоже находится, на выходе — по столбцам.
+        let mut t = cb.clone();
+        for base in [320usize, 256] {
+            for r in 0..4 {
+                for c in 0..4 {
+                    t[(base + r * 16 + c * 4) / 4] = cb[(base + c * 16 + r * 4) / 4];
+                }
+            }
+        }
+        assert_eq!(camera_at(&layout, &|o: usize| t[o / 4]).unwrap(), s);
+        // Рендер относительно камеры: перенос 0, положение отдельно — тоже камера.
+        let mut rel = cb.clone();
+        rel[(320 + 48) / 4..(320 + 60) / 4].copy_from_slice(&[0.0; 3]);
+        assert!(camera_at(&layout, &|o: usize| rel[o / 4]).is_some());
+        let mut tiny = cb.clone();
+        tiny[4] = 1.0; // «экран» 1×1117 — не камера
+        assert!(camera_at(&layout, &|o: usize| tiny[o / 4]).is_none());
         cb[(320 + 52) / 4] = 3.0; // перенос не совпал с положением — не камера
         assert!(camera_at(&layout, &|o: usize| cb[o / 4]).is_none());
     }

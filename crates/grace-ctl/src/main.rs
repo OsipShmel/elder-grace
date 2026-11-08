@@ -61,6 +61,13 @@ enum Command {
         #[arg(long)]
         save: Option<PathBuf>,
     },
+    /// Отладка: прочитать память игры (shim d3d12) и показать как f32
+    Peek {
+        /// Адрес (0x…)
+        addr: String,
+        #[arg(default_value_t = 256)]
+        len: u32,
+    },
     /// Подмены шейдеров в игре (shim d3d12, по умолчанию 127.0.0.1:47322)
     Overrides {
         #[arg(value_enum, default_value_t = Op::Status)]
@@ -139,7 +146,7 @@ impl Conn for Tcp {
 }
 
 fn connect(cli: &Cli) -> Result<Box<dyn Conn>> {
-    let d3d12 = matches!(cli.command, Command::Overrides { .. } | Command::Bound { .. } | Command::Camera { .. }) && cli.socket.is_none();
+    let d3d12 = matches!(cli.command, Command::Overrides { .. } | Command::Bound { .. } | Command::Camera { .. } | Command::Peek { .. }) && cli.socket.is_none();
     let tcp = cli
         .tcp
         .clone()
@@ -216,6 +223,19 @@ fn print(cli: &Cli, response: &Response) -> Result<()> {
                     c.position[0], c.position[1], c.position[2], fwd[0], fwd[1], fwd[2], fovy.to_degrees()
                 );
             }
+            if !r.projections.is_empty() {
+                println!("перспективных проекций в памяти: {} (первые)", r.projections.len());
+                for (addr, fovy, aspect) in r.projections.iter().take(12) {
+                    println!("  {addr:#x} · fovy {fovy:.1}° · P00/P11 {aspect:.3}");
+                }
+            }
+        }
+        Response::Peek { addr, bytes } => {
+            println!("{addr:#x}: {} байт", bytes.len());
+            for (i, row) in bytes.as_chunks::<16>().0.iter().enumerate() {
+                let f: Vec<String> = row.as_chunks::<4>().0.iter().map(|b| format!("{:>12.4}", f32::from_le_bytes(*b))).collect();
+                println!("  +{:#06x} {}", i * 16, f.join(" "));
+            }
         }
         Response::Error { message } => bail!("ошибка: {message}"),
     }
@@ -242,6 +262,10 @@ fn main() -> Result<()> {
                 println!("сохранено: {}", out.display());
             }
             Ok(())
+        }
+        Command::Peek { ref addr, len } => {
+            let a = u64::from_str_radix(addr.trim_start_matches("0x"), 16).with_context(|| format!("адрес {addr}"))?;
+            print(&cli, &ask(&mut conn, &Request::Peek { addr: a, len })?)
         }
         Command::Overrides { op } => print(&cli, &ask(&mut conn, &Request::Overrides { op: op.into() })?),
         Command::Watch => loop {

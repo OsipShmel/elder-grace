@@ -44,6 +44,7 @@ const MAX_CANDIDATES: usize = 32;
 pub fn find_camera(layout: &CameraLayout) -> CameraReport {
     let need = [layout.position as usize + 12, layout.inv_view as usize + 64, layout.proj as usize + 64, layout.screen.map_or(0, |s| s as usize + 16)].into_iter().max().unwrap_or(64);
     let mut candidates: Vec<CameraSample> = Vec::new();
+    let mut projections: Vec<(u64, f32, f32)> = Vec::new();
     let (mut regions, mut bytes) = (0usize, 0u64);
     let mut buf = vec![0u8; CHUNK + need];
     // SAFETY: псевдо-хендл текущего процесса.
@@ -77,6 +78,11 @@ pub fn find_camera(layout: &CameraLayout) -> CameraReport {
                     {
                         candidates.push(c);
                     }
+                    if projections.len() < 64
+                        && let Some((fovy, aspect)) = grace_proto::projection_at(&f)
+                    {
+                        projections.push(((at + off) as u64, fovy, aspect));
+                    }
                     off += STEP;
                 }
                 // Следующий кусок перекрывает хвост на `need`, чтобы не пропустить структуру на стыке.
@@ -85,5 +91,15 @@ pub fn find_camera(layout: &CameraLayout) -> CameraReport {
         }
         addr = end;
     }
-    CameraReport { buffers: regions, bytes, candidates }
+    CameraReport { buffers: regions, bytes, candidates, projections }
+}
+
+/// Отладочное чтение памяти игры (ошибка чтения — пустой ответ, не падение).
+pub fn peek(addr: u64, len: u32) -> Vec<u8> {
+    let mut buf = vec![0u8; (len as usize).min(1 << 20)];
+    let mut got = 0usize;
+    // SAFETY: читаем копией в свой буфер через ReadProcessMemory.
+    let ok = unsafe { ReadProcessMemory(GetCurrentProcess(), addr as usize as *const c_void, buf.as_mut_ptr().cast(), buf.len(), &mut got) } != 0;
+    buf.truncate(if ok { got } else { 0 });
+    buf
 }

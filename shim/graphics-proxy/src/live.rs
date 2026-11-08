@@ -351,6 +351,7 @@ fn serve(conn: TcpStream) {
                 version: env!("CARGO_PKG_VERSION").into(),
             },
             Ok(Some(Request::Stats)) => Response::Error { message: "статистика кадра — в shim dxgi (порт 47321)".into() },
+            Ok(Some(Request::Camera { layout })) => Response::Camera(crate::resources::find_camera(&layout)),
             Ok(Some(Request::Bound { ms })) => {
                 if crate::recipes::active() {
                     Response::Bound(bound_report(ms))

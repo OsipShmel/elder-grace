@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use grace_proto::{OverrideOp, Request, Response, read_message, write_message};
+use grace_proto::{CameraLayout, OverrideOp, Request, Response, read_message, write_message};
 
 /// Порт статистики shim'а dxgi внутри игры (см. shim/dxgi-proxy).
 const SHIM_ADDR: &str = "127.0.0.1:47321";
@@ -51,6 +51,15 @@ enum Command {
         /// Только пиксельные шейдеры
         #[arg(long)]
         ps: bool,
+    },
+    /// Камера из живой игры (shim d3d12): поиск cbuffer'а по раскладке из JSON игры
+    Camera {
+        /// Раскладка cbuffer'а камеры (например, ../grace-eldenring/data/camera-layout.json)
+        #[arg(long)]
+        layout: PathBuf,
+        /// Сохранить первую найденную камеру в JSON (для er-viewer --camera)
+        #[arg(long)]
+        save: Option<PathBuf>,
     },
     /// Подмены шейдеров в игре (shim d3d12, по умолчанию 127.0.0.1:47322)
     Overrides {
@@ -130,7 +139,7 @@ impl Conn for Tcp {
 }
 
 fn connect(cli: &Cli) -> Result<Box<dyn Conn>> {
-    let d3d12 = matches!(cli.command, Command::Overrides { .. } | Command::Bound { .. }) && cli.socket.is_none();
+    let d3d12 = matches!(cli.command, Command::Overrides { .. } | Command::Bound { .. } | Command::Camera { .. }) && cli.socket.is_none();
     let tcp = cli
         .tcp
         .clone()
@@ -195,6 +204,19 @@ fn print(cli: &Cli, response: &Response) -> Result<()> {
             }
         }
         Response::Bound(r) => println!("за {} мс шейдеров: {}", r.ms, r.shaders.len()),
+        Response::Camera(r) => {
+            println!("отображённых буферов {} ({} МБ), кандидатов-камер {}", r.buffers, r.bytes >> 20, r.candidates.len());
+            for c in &r.candidates {
+                // column_major: [r][c] → индекс c·4 + r; вперёд — столбец 2, P[1][1] = ctg(fovy/2).
+                let fwd = [c.inv_view[8], c.inv_view[9], c.inv_view[10]];
+                let fovy = 2.0 * (1.0 / c.proj[5]).atan();
+                let screen = c.screen.map(|s| format!(" · экран {}×{}", s[0], s[1])).unwrap_or_default();
+                println!(
+                    "  позиция ({:.2}, {:.2}, {:.2}) · вперёд ({:.3}, {:.3}, {:.3}) · fovy {:.1}°{screen}",
+                    c.position[0], c.position[1], c.position[2], fwd[0], fwd[1], fwd[2], fovy.to_degrees()
+                );
+            }
+        }
         Response::Error { message } => bail!("ошибка: {message}"),
     }
     Ok(())
@@ -209,6 +231,17 @@ fn main() -> Result<()> {
         Command::Bound { ms, top, ps } => {
             let r = ask(&mut conn, &Request::Bound { ms })?;
             print_bound(&cli, &r, top, ps)
+        }
+        Command::Camera { ref layout, ref save } => {
+            let layout: CameraLayout = serde_json::from_str(&std::fs::read_to_string(layout).with_context(|| format!("чтение {}", layout.display()))?)?;
+            let r = ask(&mut conn, &Request::Camera { layout })?;
+            print(&cli, &r)?;
+            if let (Some(out), Response::Camera(rep)) = (save, &r) {
+                let first = rep.candidates.first().context("камера не найдена — нечего сохранять")?;
+                std::fs::write(out, serde_json::to_string_pretty(first)?)?;
+                println!("сохранено: {}", out.display());
+            }
+            Ok(())
         }
         Command::Overrides { op } => print(&cli, &ask(&mut conn, &Request::Overrides { op: op.into() })?),
         Command::Watch => loop {

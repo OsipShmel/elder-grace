@@ -4,11 +4,12 @@ Newest entries on top. Each entry: what was done, how it was checked, numbers, w
 
 ## ▶ Current state (summary as of 2026-11-08, read first)
 
-**Where we are:** path A (native data viewer) is complete, 6/6 milestones; **Phase R is complete** (both repositories public on GitHub, everything in English, the port depends on the engine tag `v0.1.0`). **Next:** Phase 6 **C2-b** (native rendering driven by the live game's state), starting with milestone **B0: live camera mirror** (see `docs/PLAN.md`, "Phase 6: C2-b"). Decisions: ADR 0004 (C2-b), ADR 0005 (engine as a framework, cargo git dependency + `[patch]`). **Do not start C2-b without the user's go.**
+**Where we are:** path A complete (M1–M6), Phase R complete, **C2-b started: B0 (live camera mirror) works** on branches `feat/live-mirror` (both repositories, not merged). `er-viewer m18_00_00_00 --map --live` follows the game camera every frame (see Session 9). **Next:** user's visual check of B0 while moving, then merge; then **B1** (world around the player, `m60` tiles). Decisions: ADR 0004 (C2-b), 0005 (engine as a framework), 0006 (live mirror). Working style: no up-front architecture or plan documents; pragmatic code without wild per-game hardcode (rule 7 in `CLAUDE.md`).
 
 **Layout:** `ProjectPort/` (not git) → `elder-grace/` (engine, git, remote `git@github.com:OsipShmel/elder-grace.git`, Apache-2.0), `grace-eldenring/` (game, git, remote `git@github.com:OsipShmel/grace-ER.git`, MIT; the folder name differs from the repository name), `ProjectPort/.cargo/config.toml` (local `[patch]` → `elder-grace/crates/*`, not in git), `.local/` (data, prefix, caches, frames; not git). Both `main` branches are pushed; engine tag `v0.1.0` is on GitHub. Pristine Elden Ring 1.17.2: `~/Games/EldenRing/Game` (read-only); sandbox: `.local/game_bean/elden_ring`.
 
 **What works (verified):**
+- **Live mirror (B0):** the dxgi shim copies requested memory regions into `.local/run/<game>/mirror.bin` at every `Present` (seqlock record, `grace-proto::mirror`); `grace-live` (new public crate) reads it via mmap and runs a session (discover → mirror → decode → rediscover); the game supplies discover/decode (`er-live`). Run: `cargo xtask oracle run eldenring` → player in the world → `cd grace-eldenring && cargo run --release -p er-viewer -- m18_00_00_00 --map --live`.
 - **Oracle** on GPTK 3.0-3 in one command: `cargo xtask oracle setup|steam [--ui]|run [--label L] [--no-shim] [--no-overrides] [--no-esync]|status|kill|shot <png>`. esync on by default (+~20% in the open world). Steam logs in by itself with the saved session.
 - **d3d12 shim in the game:** shader dump (5988), live overrides (`grace-ctl overrides on|off|toggle|reload`, `cargo xtask overrides --reload`; `.hlsl` for DXBC/DXIL, `.irpatch` patches the original DXIL), `grace-ctl bound` (shaders of the frame), camera and memory debugging: `grace-ctl camera|peek|find-floats` (process memory walk via VirtualQuery + ReadProcessMemory, safe). Only the "golden text" override is active; demo patches are in `grace-eldenring/shaders/overrides/examples/`.
 - **Measurements:** dxgi shim (frame time), `cargo xtask bench`, `cargo xtask trace [--template "System Trace"]`.
@@ -24,6 +25,28 @@ Newest entries on top. Each entry: what was done, how it was checked, numbers, w
 **Renderer gaps:** SpeedTree trees (positions in a foreign stream), bones of static meshes, normals/lighting/fog as in the game, mask textures of map pieces, the open world (`m60`).
 
 **Principles:** the user's legal copy; pristine is read-only; no game data in git; nothing online; logins by the user; external source builds only with their "yes"; large work in feature branches (the agent commits; merges and pushes only with the user's permission); conversation in Russian; docs, code and commits in English.
+
+---
+
+## 2026-11-08 — Session 9: C2-b B0, live camera mirror (branches `feat/live-mirror`, both repositories)
+
+**Done:**
+- Design: `docs/specs/2026-11-08-live-mirror-design.md` (a direction, not a contract), ADR 0006. Rule 7 in `CLAUDE.md`: no wild per-game hardcode in the engine, but no up-front architecture.
+- `grace-proto::mirror`: a 64 KiB record (header with seqlock `seq`, frame, QPC, shim copy time, region generation; table of up to 64 regions; data), `Request::Mirror { regions }`.
+- `dxgi-proxy`: `GRACE_MIRROR` → `CreateFileMapping` of the file; at every `Present` copies the regions with `ReadProcessMemory` (freed memory → status flag, no crash), never blocks (`try_lock`).
+- `grace-live` (new public crate): `ShimClient`, `MirrorReader` (memmap2), `LiveSession` (discovery on a thread, 1 kHz watcher stamping frame arrivals with the host clock, stale/rediscovery policy, stats). `grace-render::viewer::run_with` takes a per-frame camera driver. `xtask oracle run` sets `GRACE_MIRROR` (fresh file per run).
+- Port: `er-live` (camera discovery moved out of `er-tool`, per-copy validation, decode into the viewer convention), `er-tool camera` uses it, `er-viewer --live`.
+
+**Checked:**
+- Probe (throwaway exe under Wine): a Wine `MapViewOfFile` write is visible to a native mmap of the same file at once (255 changes in 256 samples). No `WriteFile` fallback needed.
+- Tests and clippy (host and Windows shims) green in both repositories.
+- Live, crypt of Stranded Graveyard, game 1.17.2, esync, shader overrides on: discovery ~60 s, then tracking. **Numbers:** game 40–54 fps (Metal HUD 38.6), our window 118–120 fps, sample age at use p50 9.0–9.8 ms / p99 17.9–20.5 ms, shim copy 143–180 µs per frame (4 regions; one sample 630 µs). Frames: `.local/captures/b0-game.png` and `b0-ours.png` show the same view (arch in the center, columns and urns on the left, sarcophagus and statue on the right); our window is 16:10, the game 16:9.
+- First run found 0 copies: the old search compared copies with the cbSceneParam rotation taken before a ~1 min walk, and the camera had moved. Fixed by per-copy validation + voting with a 0.5 m tolerance.
+
+**Open:**
+- Shim copy cost is above the 50 µs target (`ReadProcessMemory` under Wine goes through the server, ~36 µs per region). Options: fewer regions, an in-process guarded read.
+- Discovery takes ~1 min (two memory walks + ~1000 peeks).
+- User's check by eye while moving the camera; merge `feat/live-mirror` (with permission); a new engine tag before the port can depend on `grace-live` without the local patch (`ProjectPort/.cargo/config.toml` now also patches `grace-live`).
 
 ---
 

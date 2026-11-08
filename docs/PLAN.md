@@ -10,7 +10,7 @@ The agent reads this file at the start of every session and writes progress to `
 
 Every phase ends with a **milestone**: something the user runs themselves, with a measurable criterion. Phases 1, 3 and 5 are followed by **forks**: decisions made by numbers, not by faith.
 
-**Status (2026-11-08):** phases 0–2 done; phase 3 done as tooling (the game is CPU-bound, see fork 1); phases 4–5 done as path A (milestones M1–M6, data layer in `grace-eldenring/crates/er-data`); fork 3 decided: **C2-b**. Phase R (restructuring) done. Next: **Phase 6: C2-b**, on the user's go.
+**Status (2026-11-08):** phases 0–2 done; phase 3 done as tooling (the game is CPU-bound, see fork 1); phases 4–5 done as path A (milestones M1–M6, data layer in `grace-eldenring/crates/er-data`); fork 3 decided: **C2-b**. Phase R (restructuring) done. **Phase 6: C2-b** in progress: B0 works.
 
 ---
 
@@ -147,7 +147,7 @@ Tasks (in order):
 **Why:** play the original game (FromSoftware logic) with Elder Grace's native graphics; then take the game's own rendering away.
 
 Milestones (each checked by automatic comparison with the oracle, as in M6):
-- **B0: live camera mirror.** The shim finds the game's camera structure once and every frame publishes the camera and world position through a fast channel (shared memory, not a 7 GB walk). The `er-viewer` window follows the game camera in real time. Numbers: latency, FPS of both windows.
+- **B0: live camera mirror** (works on `feat/live-mirror`, 2026-11-08; see PROGRESS Session 9). The shim finds the game's camera structure once and every frame publishes the camera and world position through a fast channel (shared memory, not a 7 GB walk). The `er-viewer` window follows the game camera in real time. Numbers: latency, FPS of both windows.
 - **B1: the world around the player.** The map by player position: dungeons (`m1x`) and the open world by `m60_XX_YY` tiles with streaming; LOD.
 - **B2: dynamic objects.** Characters/enemies/items: which models and where (reading game memory: `ChrIns` etc.), in a rest pose first.
 - **B3: animation.** Bone matrices from the game (memory or skinning buffers), skinning in our renderer.

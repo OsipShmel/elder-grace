@@ -1,28 +1,31 @@
-# 0005 — Elder Grace как самостоятельный фреймворк; порт подтягивает его зависимостью
+# 0005: Elder Grace as a standalone framework; ports pull it in as a dependency
 
-Дата: 2026-11-08. Статус: **принято**; способ подключения — **cargo git-зависимость + локальный `[patch]`** (решение пользователя 2026-11-08).
+- Date: 2026-11-08
+- Status: **accepted**; mechanism: **cargo git dependency + local `[patch]`** (user's decision, 2026-11-08)
 
-## Контекст
+## Context
 
-Сейчас (ADR 0003) два репозитория лежат рядом в `ProjectPort/` и связаны путями (`../elder-grace/crates/...`). Сквозные изменения шли двумя ветками с одинаковым именем (`feat/game-camera`), и `main` игры мог ссылаться на неслитый код движка. Elder Grace задуман как фреймворк для переноса игр (Elden Ring — первый полигон), значит его нужно оформить как библиотеку с версиями и своим remote.
+Until now (ADR 0003) the two repositories sat side by side in `ProjectPort/` and were linked by relative paths (`../elder-grace/crates/...`). Cross-cutting changes went in two branches with the same name (`feat/game-camera`), and the game's `main` could reference unmerged engine code. Elder Grace is meant as a framework for porting games (Elden Ring is the first proving ground), so it has to be shaped as a versioned library with its own remote.
 
-## Решение
+## Decision
 
-1. `elder-grace` — отдельный remote, оформлен как фреймворк: публичные крейты `grace-*` с понятными границами и версиями (теги `vX.Y.Z`), README «что это и как подключить», CHANGELOG.
-2. `grace-eldenring` — отдельный remote, потребитель фреймворка: README «как собрать порт», зависимости на версии движка.
-3. **Язык:** документация, документы для ИИ-агентов (`CLAUDE.md` и др.), комментарии и сообщения в коде (ошибки, логи, CLI), сообщения коммитов — **на английском**. Общение с пользователем — по-русски, как и раньше.
+1. `elder-grace` has its own remote (`https://github.com/OsipShmel/elder-grace`, public) and is shaped as a framework: public `grace-*` library crates with clear boundaries and versions (`vX.Y.Z` tags), a README ("what it is and how to depend on it"), a CHANGELOG.
+2. `grace-eldenring` has its own remote (`https://github.com/OsipShmel/grace-eldenring`, public) and consumes the framework: a README ("how to build the port"), dependencies on engine versions.
+3. **Language:** documentation, documents for AI agents (`CLAUDE.md` and others), code comments and messages (errors, logs, CLI), and commit messages are **in English**. Conversation with the user stays in Russian.
 
-## Как подключать движок — решено: cargo git + `[patch]`
+## How the engine is pulled in: cargo git + `[patch]`
 
-| Вариант | Плюсы | Минусы |
+| Option | Pros | Cons |
 |---|---|---|
-| **git-сабмодуль** `grace-eldenring/engine → elder-grace` + path-зависимости | точная версия движка в каждом коммите порта; код движка виден внутри репо порта | `git submodule update` после клона/переключения; detached HEAD; сквозная правка = 2 коммита + обновление указателя |
-| **cargo git-зависимость** `grace-render = { git = "…", tag = "v0.2.0" }` + локальный `[patch]` на соседний checkout | идиоматично для Rust; версия закреплена в `Cargo.lock`; нет ручной синхронизации указателя | для правки движка в процессе нужен `[patch]` (одна строка в `.cargo/config.toml`, не в git) |
+| **git submodule** `grace-eldenring/engine → elder-grace` + path dependencies | exact engine version in every port commit; engine code visible inside the port repo | `git submodule update` after clone/checkout; detached HEAD; a cross-cutting change is 2 commits plus a pointer update |
+| **cargo git dependency** `grace-render = { git = "…", tag = "v0.1.0" }` + local `[patch]` to a sibling checkout | idiomatic Rust; the version is pinned in `Cargo.lock`; no manual pointer sync | editing the engine alongside the port needs a `[patch]` (a few lines of local cargo config, not in git) |
 
-Решение: **cargo git-зависимость** с закреплённым тегом движка (`Cargo.lock` фиксирует коммит); для совместной правки движка и порта — локальный `[patch."https://…/elder-grace"]` на соседний checkout в `.cargo/config.toml` порта (не в git). Сабмодуль не используем.
+Decision: **cargo git dependency** on a pinned engine tag (`Cargo.lock` pins the commit). For joint work on the engine and the port, a local `[patch."https://github.com/OsipShmel/elder-grace"]` pointing at the sibling checkout goes into `ProjectPort/.cargo/config.toml` (outside both repositories) or the port's untracked `.cargo/config.toml`. No submodule.
 
-## Последствия
+Note: cargo still fetches the git source once even when it is patched, so the engine remote and its tag must exist before a clean build of the port works.
 
-- Внешние инструменты движка (`xtask`, shim'ы, `tools/grace-irconv`) остаются в `elder-grace`; игровые данные/знания — только в `grace-eldenring` (правило ядра не меняется).
-- `ProjectPort/.local/` (данные, префикс, кэши) остаётся общей и вне git; пути к ней — через `config/local.toml`.
-- План работ — «Фаза R» в `PLAN.md`; выполняется до начала C2-b (ADR 0004).
+## Consequences
+
+- External engine tooling (`xtask`, shims, `tools/grace-irconv`) stays in `elder-grace`; game data and game knowledge live only in `grace-eldenring` (the core rule does not change).
+- `ProjectPort/.local/` (data, prefix, caches) stays shared and outside git; paths to it come from `config/local.toml`.
+- The work plan is "Phase R" in `PLAN.md`, done before C2-b (ADR 0004).

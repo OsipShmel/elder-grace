@@ -1,73 +1,73 @@
-# Референсы
+# References
 
-На какие проекты опираемся и что именно у них берём. Справочники по конкретным играм лежат в репозиториях игр (`../grace-<игра>/docs/`).
+Which projects we lean on and what exactly we take from them. References for specific games live in the game repositories (`../grace-<game>/docs/`).
 
-Перед тем как брать **код**, лицензию проверяем по самому репозиторию и записываем в `THIRD_PARTY.md`. Лицензии ниже указаны по памяти и помечены «проверить», если не сверены.
+Before taking any **code**, the license is checked against the repository itself and recorded in `THIRD_PARTY.md`. Licenses below are from memory and marked "verify" unless checked.
 
-## Проекты-образцы (модель «свой клиент поверх легальной копии»)
+## Model projects ("our own client on top of a legal copy")
 
-### Horizon — Minecraft: Java Edition на Rust
-- https://github.com/horizon-rust/horizon · MIT (по README, сверено 2026-11-07).
-- Переписан с нуля на Rust (около 40 крейтов, wgpu + WGSL, на маке работает через Metal). Кода и ассетов Mojang не содержит.
-- Готовит ресурсы из **собственной копии** пользователя, сверяя её с зафиксированными контрольными суммами.
-- Заметно, что его писали агенты: в репозитории есть `CLAUDE.md`, `AGENTS.md`, `.claude/skills/vanilla-parity/`.
-- **Что берём:**
-  - отдельный инструмент подготовки с lock-файлом хешей, `--check`, метками версии и lock-файлом на каталог (→ `grace-prepare`);
-  - дифференциальные харнессы: эталон и наш код получают одни входы, выходы сравниваются вплоть до битов float (→ сравнение с эталоном);
-  - реестр паритета на уровне методов (`tools/port_ledger.py`) и честная формулировка «100% от того, что сравнивают харнессы»;
-  - управление агентом: локальный сокет, `horizon-ctl` и MCP-сервер с общими JSON-командами, `wait-for`/`events` без опроса (→ `grace-ctl`/`grace-mcp`);
-  - фиксированный тик симуляции отдельно от рендера;
-  - патчи зависимостей через `[patch.crates-io]` с комментарием, когда патч можно убрать.
-- **Чем наш случай сложнее:** у Minecraft есть официальные маппинги Mojang и декомпилируемый Java-байткод, поэтому Horizon портирует метод за методом. У нативных игр для Windows (C++, часто с обфускацией) такого источника нет, и эталоном для нас служит работающая под трансляцией игра, а не исходники.
+### Horizon: Minecraft: Java Edition in Rust
+- https://github.com/horizon-rust/horizon · MIT (per the README, checked 2026-11-07).
+- Rewritten from scratch in Rust (about 40 crates, wgpu + WGSL, runs on Metal on a Mac). Contains no Mojang code or assets.
+- Prepares resources from the user's **own copy**, checking it against pinned checksums.
+- Clearly written by agents: the repository has `CLAUDE.md`, `AGENTS.md`, `.claude/skills/vanilla-parity/`.
+- **What we take:**
+  - a separate preparation tool with a hash lock file, `--check`, version stamps and a lock file on the directory (→ `grace-prepare`);
+  - differential harnesses: the reference and our code get the same inputs, outputs are compared down to float bits (→ comparison with the oracle);
+  - a method-level parity ledger (`tools/port_ledger.py`) and the honest wording "100% of what the harnesses compare";
+  - agent control: a local socket, `horizon-ctl` and an MCP server with shared JSON commands, `wait-for`/`events` without polling (→ `grace-ctl`/`grace-mcp`);
+  - a fixed simulation tick separate from rendering;
+  - dependency patches via `[patch.crates-io]` with a comment on when the patch can go.
+- **Why our case is harder:** Minecraft has official Mojang mappings and decompilable Java bytecode, so Horizon ports method by method. Native Windows games (C++, often obfuscated) have no such source, so our reference is the game running under translation, not source code.
 
-### IW4L — Modern Warfare 2 (2009) на Rust
-- Упомянут пользователем как референс. Ссылка и подробности пока не собраны — **TODO:** найти репозиторий и разобрать так же, как Horizon.
-- Ожидаемая особенность: за плечами движка IW4 годы реверса сообщества (IW4x и др.), то есть база знаний гораздо богаче, чем у большинства игр.
+### IW4L: Modern Warfare 2 (2009) in Rust
+- Mentioned by the user as a reference. Link and details not collected yet. **TODO:** find the repository and analyze it like Horizon.
+- Expected trait: the IW4 engine has years of community reverse engineering behind it (IW4x and others), so its knowledge base is much richer than most games'.
 
-### OpenMW — Morrowind
-- https://openmw.org · GPL-3.0 (проверить).
-- Классика модели A: свой движок поверх данных купленной игры. Около 15 лет до паритета — честная оценка масштаба для режима A.
+### OpenMW: Morrowind
+- https://openmw.org · GPL-3.0 (verify).
+- The classic mode A: an own engine on top of the data of a purchased game. About 15 years to parity, an honest estimate of mode A's scale.
 
-### Xash3D FWGS — движок GoldSrc (Half-Life 1)
-- https://github.com/FWGS/xash3d-fwgs · лицензия проверить.
-- Открытая реимплементация движка, работает на современных платформах. Пример того, что для старых игр режим A уже кем-то сделан.
+### Xash3D FWGS: the GoldSrc engine (Half-Life 1)
+- https://github.com/FWGS/xash3d-fwgs · license to verify.
+- An open engine reimplementation running on modern platforms. Proof that mode A already exists for older games.
 
-## Слои трансляции (эталон)
+## Translation layers (oracle)
 
-| Проект | Роль | Лицензия |
+| Project | Role | License |
 |---|---|---|
-| CrossOver (CodeWeavers) | Основная среда эталона у пользователя | Коммерческая |
-| Apple Game Porting Toolkit (D3DMetal, Metal HUD) | Альтернативная среда эталона, DX12 → Metal | Проприетарная, только локально |
-| Wine | Основа обеих сред, DLL overrides для shim | LGPL-2.1 (проверить) |
-| DXVK | D3D9–11 → Vulkan, источник знаний о трансляции | zlib (проверить) |
-| vkd3d-proton | D3D12 → Vulkan, источник знаний о D3D12 | LGPL-2.1 (проверить) |
-| MoltenVK | Vulkan → Metal | Apache-2.0 (проверить) |
+| CrossOver (CodeWeavers) | The user's main oracle environment at first | Commercial |
+| Apple Game Porting Toolkit (D3DMetal, Metal HUD) | The current oracle environment, DX12 → Metal | Proprietary, local only |
+| Wine | Base of both environments, DLL overrides for the shims | LGPL-2.1 (verify) |
+| DXVK | D3D9–11 → Vulkan, a source of translation knowledge | zlib (verify) |
+| vkd3d-proton | D3D12 → Vulkan, a source of D3D12 knowledge | LGPL-2.1 (verify) |
+| MoltenVK | Vulkan → Metal | Apache-2.0 (verify) |
 
-## Шейдеры
+## Shaders
 
-| Проект | Зачем | Лицензия |
+| Project | Why | License |
 |---|---|---|
-| Apple Metal Shader Converter | DXIL → Metal IR/`metallib` | Проприетарная (Apple), только локально |
-| DirectXShaderCompiler (dxc) | Разбор и дизассемблирование DXIL | NCSA/LLVM (проверить) |
-| dxil-spirv (из vkd3d-proton) | DXIL → SPIR-V | MIT (проверить) |
-| SPIRV-Cross | SPIR-V → MSL (читаемый) | Apache-2.0 (проверить) |
-| naga (wgpu) | Трансляция шейдеров на Rust | MIT/Apache-2.0 (проверить) |
+| Apple Metal Shader Converter | DXIL → Metal IR/`metallib` | Proprietary (Apple), local only |
+| DirectXShaderCompiler (dxc) | DXIL parsing, disassembly, reassembly | NCSA/LLVM (checked, see THIRD_PARTY) |
+| dxil-spirv (from vkd3d-proton) | DXIL → SPIR-V | MIT (verify) |
+| SPIRV-Cross | SPIR-V → MSL (readable) | Apache-2.0 |
+| naga (wgpu) | Shader translation in Rust | MIT/Apache-2.0 (verify) |
 
-## Rust и платформа
+## Rust and the platform
 
-| Проект | Зачем | Лицензия |
+| Project | Why | License |
 |---|---|---|
-| objc2 и крейты фреймворков (`objc2-metal`, `objc2-metal-fx`, `objc2-quartz-core`, `objc2-app-kit`, `objc2-game-controller`) | Metal, MetalFX, AppKit, GameController из Rust | MIT (проверить) |
-| wgpu | Образец кроссплатформенного рендера на Rust, Metal-бэкенд как пример | MIT/Apache-2.0 (проверить) |
-| cargo-xwin или mingw | Кросс-сборка shim под Windows | проверить |
+| objc2 and framework crates (`objc2-metal`, `objc2-metal-fx`, `objc2-quartz-core`, `objc2-app-kit`, `objc2-game-controller`) | Metal, MetalFX, AppKit, GameController from Rust | MIT / Zlib / Apache-2.0 (checked, see THIRD_PARTY) |
+| wgpu | An example of cross-platform rendering in Rust, its Metal backend as a sample | MIT/Apache-2.0 (verify) |
+| mingw-w64 | Cross-building the shims for Windows | verify |
 
-## Физика и прочее (на потом)
+## Physics and the rest (later)
 
-| Проект | Зачем | Лицензия |
+| Project | Why | License |
 |---|---|---|
-| Jolt Physics | Физика (C++, через FFI) | MIT (проверить) |
-| Rapier | Физика на чистом Rust | Apache-2.0 (проверить) |
+| Jolt Physics | Physics (C++, through FFI) | MIT (verify) |
+| Rapier | Physics in pure Rust | Apache-2.0 (verify) |
 
-## Режим B, вне рамок проекта (для понимания)
+## Mode B, out of scope (for understanding)
 
-- N64Recomp, XenonRecomp / UnleashedRecomp — статическая рекомпиляция консольных бинарников. Хорошо работает на фиксированном железе и старых бинарниках. Для современных PC-exe с обфускацией и DRM это неподъёмно и юридически серо, поэтому этим не занимаемся.
+- N64Recomp, XenonRecomp / UnleashedRecomp: static recompilation of console binaries. Works well on fixed hardware and older binaries. For modern PC executables with obfuscation and DRM it is out of reach and legally grey, so we do not do it.

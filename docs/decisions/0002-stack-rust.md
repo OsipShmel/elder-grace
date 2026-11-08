@@ -1,32 +1,32 @@
-# 0002 — Стек: Rust + Metal через objc2
+# 0002: Stack: Rust + Metal through objc2
 
-- Статус: принято (пересмотреть после фазы 0, если упрёмся в биндинги)
-- Дата: 2026-11-07
+- Status: accepted (revisit after phase 0 if the bindings get in the way)
+- Date: 2026-11-07
 
-## Контекст
+## Context
 
-Изначально предлагались C# (импортёр) + C++20/metal-cpp (рантайм) + CMake/Xcode. Что изменилось:
-- Почти весь код пишет агент. Ошибки памяти и UB в C++ в агентном коде дороже всего: они тихие и выясняются через дни.
-- Проект теперь — инструмент для разных игр, плюс shim под Windows x86_64 внутри Wine.
-- Образец Horizon (Rust, около 40 крейтов, агентная разработка) показывает, что Rust тянет проект такого масштаба.
+The initial proposal was C# (importer) + C++20/metal-cpp (runtime) + CMake/Xcode. What changed:
+- An agent writes almost all the code. Memory errors and UB in agent-written C++ are the most expensive kind: they are silent and surface days later.
+- The project is now a tool for different games, plus a Windows x86_64 shim inside Wine.
+- The Horizon example (Rust, about 40 crates, agent-driven development) shows Rust carries a project of this size.
 
-## Решение
+## Decision
 
-- **Rust** (edition 2024) для ядра, рантайма, парсеров, инструментов и shim. Cargo workspace.
-- **Metal, MetalFX, AppKit, GameController** — через крейты `objc2-*`. Шейдеры на MSL.
-- **Shim** — `cdylib`, кросс-компиляция под `x86_64-pc-windows-gnu` (mingw) или `-msvc` (`cargo-xwin`); выбираем на фазе 0 по тому, что лучше грузится в Wine.
-- **Swift** — опционально для лаунчера/настроек (SwiftUI), через C ABI, не в горячем пути.
-- **C/C++** — точечно через FFI (например, Jolt), если нет приемлемой Rust-альтернативы.
-- **C# / .NET** — только эталон для дифференциальных тестов (SoulsFormats и т.п.), не в продукте.
+- **Rust** (edition 2024) for the core, runtime, parsers, tools and shims. A cargo workspace.
+- **Metal, MetalFX, AppKit, GameController** through the `objc2-*` crates. Shaders in MSL.
+- **Shims**: `cdylib`, cross-compiled for `x86_64-pc-windows-gnu` (mingw) or `-msvc` (`cargo-xwin`); chosen in phase 0 by what loads better in Wine (it is `-gnu`).
+- **Swift**: optional for a launcher/settings (SwiftUI), through the C ABI, never in the hot path.
+- **C/C++**: selectively through FFI (for example, Jolt) when there is no acceptable Rust alternative.
+- **C# / .NET**: only as a reference for differential tests (SoulsFormats etc.), not in the product.
 
-## Альтернативы
+## Alternatives
 
-- **C++20 + metal-cpp.** Больше примеров из геймдева, прямой доступ ко всем C++-библиотекам. Минус: UB и ошибки памяти в агентном коде, сборка двух языков (C# + C++).
-- **Swift целиком.** Лучшая интеграция с Apple. Минусы: ARC и меньше контроля в горячем пути, слабая экосистема для бинарного парсинга и реверса, shim под Windows на Swift непрактичен.
-- **wgpu вместо прямого Metal.** Кроссплатформенность нам не нужна, а MetalFX, tile memory и memoryless-таргеты нужны напрямую.
+- **C++20 + metal-cpp.** More gamedev examples, direct access to every C++ library. Downside: UB and memory errors in agent code, a two-language build (C# + C++).
+- **All Swift.** The best Apple integration. Downsides: ARC and less control in the hot path, a weak ecosystem for binary parsing and reverse engineering, a Windows shim in Swift is impractical.
+- **wgpu instead of Metal directly.** We do not need cross-platform support, and we need MetalFX, tile memory and memoryless targets directly.
 
-## Последствия
+## Consequences
 
-- Нужно обновить Rust: на машине 1.87, а для edition 2024 и свежих `objc2-*` нужна актуальная stable.
-- Паритетные знания из SoulsFormats переносим как документацию и проверяем дифф-тестами, а не копируем код (если лицензия не позволяет иное).
-- Сборку `.app` (Info.plist, иконка, подпись для локального запуска) делаем своим `xtask`.
+- Rust had to be updated: the machine had 1.87, edition 2024 and current `objc2-*` need a recent stable.
+- Parity knowledge from SoulsFormats is carried over as documentation and checked with differential tests, not copied as code (unless the license allows otherwise).
+- The `.app` bundle (Info.plist, icon, signing for local runs) is built by our own `xtask`.

@@ -1,23 +1,23 @@
-# 0003 — Отдельные репозитории: движок и игры
+# 0003: Separate repositories: engine and games
 
-- Статус: принято
-- Дата: 2026-11-07
+- Status: accepted; the dependency mechanism is superseded by ADR 0005 (cargo git dependency)
+- Date: 2026-11-07
 
-## Контекст
+## Context
 
-Elder Grace задуман как инструмент для разных игр. Пользователь хочет отделить билд конкретной игры (то, что тестируем) от билда движка. Режим C и режим A пользуются одним и тем же ядром (протокол, `grace-ctl`, захват кадров, рендер), поэтому делить по режимам нельзя — только по линии «ядро / игра».
+Elder Grace is meant to be a tool for different games. The user wants the build of a specific game (what we test) separated from the engine build. Mode C and mode A use the same core (protocol, `grace-ctl`, frame capture, renderer), so the split cannot follow the modes, only the "core / game" line.
 
-## Решение
+## Decision
 
-- `ProjectPort/` — общая папка, не под git. В ней:
-  - `elder-grace/` — ядро, инструменты, shim, общие доки (план, архитектура, ADR, журнал);
-  - `grace-<игра>/` — по репозиторию на игру: её крейты и `docs/` (README, FORMATS, BASELINE, KNOWN_ISSUES, свой `CLAUDE.md`, свой журнал);
-  - `.local/` — общая для всех: песочницы, кэши, захваты, префиксы Wine.
-- Крейты игры зависят от ядра по пути: `grace-core = { path = "../elder-grace/crates/grace-core" }`. Публикация крейтов и git-зависимости — когда (если) понадобится распространять.
-- `config/local.toml` пока лежит в `elder-grace/config/` и описывает все игры; `grace-core` ищет его вверх по дереву или по `GRACE_ROOT`.
+- `ProjectPort/` is a shared folder, not under git. It contains:
+  - `elder-grace/`: core, tools, shims, shared docs (plan, architecture, ADRs, log);
+  - `grace-<game>/`: one repository per game: its crates and `docs/` (README, FORMATS, BASELINE, KNOWN_ISSUES, its own `CLAUDE.md`);
+  - `.local/`: shared by all: sandboxes, caches, captures, Wine prefixes.
+- Game crates depended on the core by path: `grace-core = { path = "../elder-grace/crates/grace-core" }`. ADR 0005 replaced this with a cargo git dependency on a tagged engine version plus a local `[patch]`.
+- `config/local.toml` lives in `elder-grace/config/` for now and describes every game; `grace-core` finds it by walking up the tree or through `GRACE_ROOT`.
 
-## Последствия
+## Consequences
 
-- Изменение ядра, нужное игре, — два коммита в двух репозиториях. Порядок: сначала ядро, потом игра.
-- Сессия агента открывается в `ProjectPort/` и видит оба репозитория; в корне лежит короткий `CLAUDE.md`-указатель (не под git).
-- Правило ядра из `CLAUDE.md` становится физическим: игровой код просто не может оказаться в `crates/grace-*`.
+- A core change a game needs is two commits in two repositories. Order: core first, then the game.
+- An agent session opens in `ProjectPort/` and sees both repositories; a short pointer `CLAUDE.md` sits at the root (not under git).
+- The core rule from `CLAUDE.md` becomes physical: game code simply cannot end up in `crates/grace-*`.

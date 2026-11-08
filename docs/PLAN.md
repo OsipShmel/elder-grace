@@ -1,188 +1,187 @@
-# Elder Grace — план работ
+# Elder Grace work plan
 
-Агент читает этот файл в начале каждой сессии, а прогресс пишет в `docs/PROGRESS.md`. План живой: если реальность расходится с ним, обнови план и коротко объясни почему.
+The agent reads this file at the start of every session and writes progress to `docs/PROGRESS.md`. The plan is alive: when reality diverges from it, update the plan and briefly explain why.
 
-**Цель:** инструмент и нативный движок для переноса Windows-игр на macOS (Apple Silicon), который даёт заметно больше производительности и «маковости», чем трансляция (CrossOver/GPTK). Мы целимся в +20–30% к эталону на тех же настройках или в лучшие настройки при том же FPS.
+**Goal:** a toolset and native engine for porting Windows games to macOS (Apple Silicon) that gives noticeably more performance and "Mac-ness" than translation (CrossOver/GPTK). We aim for +20–30% over the oracle at the same settings, or better settings at the same FPS.
 
-**Как идём:** через первую тестовую цель (сейчас Elden Ring, репозиторий `../grace-eldenring/`). Каждая фаза описана в общем виде, а то, что она значит для конкретной игры, лежит в документе игры.
+**How:** through the first test target (Elden Ring, repository `../grace-eldenring/`). Each phase is described generically; what it means for a specific game lives in that game's docs.
 
-**Приоритет:** измерение → графика и производительность → данные игры → нативный рантайм → геймплей.
+**Priority:** measurement → graphics and performance → game data → native runtime → gameplay.
 
-Каждая фаза заканчивается **вехой**: тем, что пользователь запускает сам, и измеримым критерием. После фаз 1, 3 и 5 стоят **развилки**: решение по цифрам, а не по вере.
+Every phase ends with a **milestone**: something the user runs themselves, with a measurable criterion. Phases 1, 3 and 5 are followed by **forks**: decisions made by numbers, not by faith.
 
----
-
-## Фаза 0 — Фундамент
-
-**Зачем:** окружение, скелет репозитория, легальная копия первой цели.
-
-Задачи:
-1. **Окружение.** Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`), свежий Rust (`rustup update`), кросс-таргет для shim (`x86_64-pc-windows-gnu` + mingw или `cargo-xwin`), .NET SDK (для эталонных инструментов сообщества), SteamCMD, среда эталона (CrossOver или GPTK). Версии записать в `PROGRESS.md`.
-2. **Первая цель.** Выбрать игру (критерии в `docs/games/README.md`). Установить чистую копию из магазина в `pristine_dir`, сделать песочницу `sandbox_dir`, создать `config/local.toml`.
-3. **Скелет репозитория.** Cargo workspace с пустыми крейтами из `docs/ARCHITECTURE.md`. `grace-app` открывает пустое Metal-окно как `.app`. `grace-ctl` отвечает на `ping`.
-4. **Лицензии.** Пройтись по `docs/REFERENCES.md`, заполнить `docs/THIRD_PARTY.md` для всего, что планируем брать кодом.
-
-**Критерий готовности:** `Grace.app` открывается, `grace-ctl ping` отвечает, чистая копия игры лежит read-only, окружение записано.
-
-**Веха:** внутренняя, только короткий отчёт.
+**Status (2026-11-08):** phases 0–2 done; phase 3 done as tooling (the game is CPU-bound, see fork 1); phases 4–5 done as path A (milestones M1–M6, data layer in `grace-eldenring/crates/er-data`); fork 3 decided: **C2-b**. Current: **Phase R** (restructuring), then **Phase 6: C2-b**.
 
 ---
 
-## Фаза 1 — Эталон и базовая линия
+## Phase 0: Foundation (done)
 
-**Зачем:** понять, где на самом деле теряется производительность. Без этого любые 20–30% — гадание.
+**Why:** environment, repository skeleton, a legal copy of the first target.
 
-Задачи:
-1. Запустить игру в среде эталона из песочницы, офлайн.
-2. **Воспроизводимый маршрут** (или несколько): точка старта, путь, длительность. Описать в `../grace-<игра>/docs/BASELINE.md` так, чтобы повторить мог и пользователь, и агент.
-3. Снять Metal HUD (FPS, время кадра), `Metal System Trace` через `xctrace`, загрузку CPU по потокам.
-4. **Metal frame capture** транслированной игры для 2–3 характерных кадров: число проходов, draw calls, render targets, самые тяжёлые шейдеры.
-5. Описать структуру кадра игры в `../grace-<игра>/docs/FORMATS.md` (раздел «Рендер»).
+Tasks:
+1. **Environment.** Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`), current Rust (`rustup update`), a cross target for the shims (`x86_64-pc-windows-gnu` + mingw), SteamCMD, an oracle environment (GPTK). Versions recorded in `PROGRESS.md`.
+2. **First target.** Pick a game (criteria in `docs/games/README.md`). Install a pristine copy from the store into `pristine_dir`, make a sandbox `sandbox_dir`, create `config/local.toml`.
+3. **Repository skeleton.** A cargo workspace with crates from `docs/ARCHITECTURE.md`. `grace-app` opens an empty Metal window as an `.app`. `grace-ctl` answers `ping`.
+4. **Licenses.** Go through `docs/REFERENCES.md`, fill `docs/THIRD_PARTY.md` for everything we plan to take as code.
 
-**Критерий готовности:** в `BASELINE.md` есть цифры на 2–3 пресетах и ответ на вопрос **«упираемся в CPU (трансляция, драйвер, логика) или в GPU (шейдеры, проходы, пропускная способность)»**.
+**Done when:** `Grace.app` opens, `grace-ctl ping` answers, the pristine copy is read-only, the environment is recorded.
 
-**Веха:** пользователь прогоняет маршрут сам и подтверждает, что цифры совпадают с его ощущениями.
-
-**Развилка 1:**
-- **GPU-bound** → основной ресурс идёт в фазы 2–3 и нативный рендер (5).
-- **CPU-bound** → фазы 2–3 делаем в минимальном объёме (они всё равно нужны как инструменты), а главная ставка — режим A (фазы 4–5 и дальше).
+**Milestone:** internal, a short report only.
 
 ---
 
-## Фаза 2 — Shim C0: наблюдение изнутри
+## Phase 1: Oracle and baseline (done)
 
-**Зачем:** видеть, что игра делает с графическим API, и связать эталон с нашими инструментами.
+**Why:** find out where performance is really lost. Without that, any 20–30% is guesswork.
 
-Задачи:
-1. Прокси-DLL графического API (для DX12-игр — `d3d12.dll` / `dxgi.dll`), Rust, кросс-сборка под Windows x86_64, загрузка в песочнице через DLL override Wine. Сначала прозрачный проброс вызовов.
-2. Логирование: создание пайплайнов, шейдеров, ресурсов; статистика кадра.
-3. **Дамп шейдерного корпуса** в `.local/shaders/<игра>/` с хешами. Каталог: какой шейдер в каком проходе и сколько стоит (из захватов фазы 1).
-4. Канал к `grace-ctl` (loopback TCP с токеном): статистика, переключатели, команда «сними кадр».
-5. Перехват констант камеры (матрицы из constant buffers), чтобы потом ставить нашу камеру в ту же позицию для сравнения кадров.
+Tasks:
+1. Run the game in the oracle environment from the sandbox, offline.
+2. **A reproducible route** (or several): start point, path, duration. Described in `../grace-<game>/docs/BASELINE.md` so that both the user and the agent can repeat it.
+3. Metal HUD (FPS, frame time), `Metal System Trace` via `xctrace`, per-thread CPU load.
+4. **Metal frame capture** of the translated game for 2–3 typical frames: pass count, draw calls, render targets, heaviest shaders.
+5. Describe the game's frame structure in `../grace-<game>/docs/FORMATS.md` ("Rendering" section).
 
-**Критерий готовности:** игра в песочнице работает с shim без потерь FPS больше 2–3%; корпус шейдеров собран; `grace-ctl stats` показывает статистику живой игры.
+**Done when:** `BASELINE.md` has numbers for 2–3 presets and answers **"are we bound by the CPU (translation, driver, logic) or by the GPU (shaders, passes, bandwidth)"**.
 
-**Веха:** пользователь играет с shim и видит оверлей или вывод `grace-ctl`.
+**Milestone:** the user runs the route and confirms the numbers match their impression.
 
----
-
-## Фаза 3 — Shim C1: подмена шейдеров и первые цифры
-
-**Зачем:** первые реальные результаты переработки графики на живой игре.
-
-Задачи:
-1. Шейдерный конвейер `grace-shader`: из корпуса → в читаемый вид (DXIL → MSL / SPIR-V и т.п.) → правка → обратно в формат, который принимает слой трансляции.
-2. Механизм подмены в shim: по хешу шейдера подставить нашу версию, откатывать на лету через `grace-ctl`.
-3. Оптимизировать 3–5 самых дорогих шейдеров из фазы 1. Замерить каждый «до/после» на маршруте.
-4. Оценить прогрев пайплайнов и кэши (статтеры), если они заметны в эталоне.
-
-**Критерий готовности:** есть таблица «шейдер → выигрыш в мс/кадр» и суммарный выигрыш на маршруте с трейсами.
-
-**Веха:** пользователь сравнивает игру с подменой и без (переключение на лету).
-
-**Развилка 2:** сколько ещё можно выжать в режиме C? Если потолок близко, переходим к фазам 4–5.
+**Fork 1:**
+- **GPU-bound** → most effort goes into phases 2–3 and native rendering (5).
+- **CPU-bound** → phases 2–3 are done minimally (they are still needed as tools), and the main bet is mode A (phases 4–5 and beyond).
+- **Result:** CPU-bound (main thread under Rosetta + D3DMetal translation, GPU ~67% busy); esync gave +~20%.
 
 ---
 
-## Фаза 4 — Слой данных: подготовка
+## Phase 2: Shim C0: observation from inside (done)
 
-**Зачем:** нативно читать данные игры. Это фундамент режима A и источник знаний для режима C.
+**Why:** see what the game does with the graphics API and connect the oracle to our tools.
 
-Задачи:
-1. Каркас `grace-prepare`: читает чистую установку, сверяет её с lock-файлом хешей, пишет кэш в `.local/cache/` с меткой версии (метку снимаем перед записью и ставим после — прерванный прогон не считается готовым), lock на каталог, режим `--check`, который не читает данные игры.
-2. Игровой модуль: архивы, сжатие, контейнеры, модели, текстуры, материалы, карты (список — в документе игры).
-3. Дифференциальные тесты парсеров против эталонного инструмента сообщества.
-4. Первая цель импорта — одна небольшая закрытая сцена (у каждой игры своя, см. документ игры). Отчёт: что распознано, что нет и почему.
+Tasks:
+1. Graphics API proxy DLLs (for DX12 games `d3d12.dll` / `dxgi.dll`), Rust, cross-built for Windows x86_64, loaded in the sandbox through a Wine DLL override. Transparent pass-through first.
+2. Logging: pipeline, shader, resource creation; frame stats.
+3. **Shader corpus dump** into `.local/shaders/<game>/` with hashes. Catalog: which shader is in which pass and what it costs (from phase 1 captures).
+4. A channel to `grace-ctl` (loopback TCP): stats, switches, "capture a frame".
+5. Camera constants (matrices from constant buffers), so our camera can be put at the same spot to compare frames. Done via memory queries (`grace-ctl camera`).
 
-**Критерий готовности:** кэш тестовой сцены готов, все меши и текстуры читаются, нераспознанное перечислено с объяснением.
+**Done when:** the game runs in the sandbox with the shim losing no more than 2–3% FPS; the shader corpus is collected; `grace-ctl stats` shows live game stats.
 
----
-
-## Фаза 5 — Нативный рендер-MVP: «прогулка призраком»
-
-**Зачем:** увидеть мир игры в нативном приложении и сравнить с эталоном попиксельно.
-
-Задачи:
-1. Каркас рендера `grace-render`: device, очереди, кадровые ресурсы, unified memory без лишних копий, BCn-текстуры как есть.
-2. Статическая геометрия, материалы через свои шаблоны, свет и туман, близкие к оригиналу (берём из структуры кадра фазы 1 и шейдеров фазы 2).
-3. Свободная камера (клавиатура, мышь, геймпад через GameController) и `--capture`.
-4. **Сравнение с эталоном:** та же камера (из фазы 2) → кадр эталона и наш кадр → `grace-capture diff`.
-5. `Grace.app`: полноэкранный режим, Cmd+Q, ProMotion, MetalFX, пресеты.
-
-**Критерий готовности:** полёт по тестовой сцене со стабильными ≥60 FPS в нативном разрешении на M5 Pro и приемлемыми на минимальной конфигурации; кадры совпадают с эталоном по геометрии и текстурам.
-
-**Веха:** «прогулка призраком». Пользователь сравнивает свет, цвета и материалы с оригиналом.
-
-**Развилка 3:**
-- **C2:** вынести нативный рендер в отдельный arm64-процесс и кормить его из shim живой игры через общую память (IOSurface, `MTLSharedEvent`). Играбельная оригинальная игра с нативным рендером.
-- **Глубокий A:** развивать свой рантайм дальше (фаза 6+).
-- Оба варианта используют один и тот же `grace-render`. Решаем по цифрам и по сложности синхронизации состояния сцены.
-- **Решено 2026-11-08: C2-b** — нативный рендер по **состоянию сцены** из живой игры (ADR 0004). Не полная замена движка: логика остаётся оригинальной, графика — наша.
+**Milestone:** the user plays with the shim and sees the overlay or `grace-ctl` output.
 
 ---
 
-## Фаза R — Реструктуризация (до C2-b)
+## Phase 3: Shim C1: shader overrides and first numbers (done as tooling)
 
-**Зачем:** Elder Grace — фреймворк, порт игры — его потребитель (ADR 0005). Сквозные правки сейчас идут ветками с одинаковыми именами в двух репо, а связь — относительными путями.
+**Why:** the first real results of reworked graphics in the live game.
 
-Задачи (по порядку):
-1. Смержить `feat/game-camera` в обоих репо (пользователь).
-2. Подключение движка — **cargo git-зависимость** с тегом версии + локальный `[patch]` на соседний checkout для совместной разработки (решено пользователем, ADR 0005).
-3. Remote для `elder-grace` и `grace-eldenring` (создаёт и пушит пользователь; агент готовит).
-4. `elder-grace` как библиотека: границы публичных крейтов `grace-*`, версии/теги, README (что это, архитектура, как подключить, требования), CHANGELOG. Знания об играх — только в репо игр.
-5. `grace-eldenring`: README (что это, как собрать и запустить порт, что нужно от пользователя — своя копия игры), зависимость на версию движка.
-6. **Английский:** все доки (включая `CLAUDE.md`, ADR, спеки/планы, `FORMATS.md`, `BASELINE.md`), комментарии, сообщения ошибок/логов/CLI, сообщения коммитов с этого момента. Общение с пользователем — по-русски.
-7. Проверка: чистый клон обоих репо → сборка, тесты, clippy; `er-viewer --map` и `oracle run` работают как раньше.
+Tasks:
+1. The `grace-shader` pipeline: corpus → readable form (DXIL → MSL / SPIR-V etc.) → edit → back into a format the translation layer accepts.
+2. Override mechanism in the shim: substitute our version by shader hash, toggle live through `grace-ctl`.
+3. Optimize the 3–5 most expensive shaders from phase 1, measuring each before/after on the route.
+4. Evaluate pipeline warm-up and caches (stutters) if they are visible in the oracle.
 
-**Критерий готовности:** два независимых репо, порт собирается против версии движка, всё на английском, README достаточно для нового человека/агента.
+**Done when:** there is a table "shader → ms/frame gain" and a total gain on the route with traces.
 
----
+**Milestone:** the user compares the game with and without overrides (live toggle).
 
-## Фаза 6 — C2-b: нативный рендер по состоянию живой игры
-
-**Зачем:** играть в оригинальную игру (логика FromSoftware) с нативной графикой Elder Grace; потом — снять с игры её собственный рендер.
-
-Вехи (каждая проверяется автоматическим сравнением с эталоном — M6):
-- **B0 — живое зеркало камеры.** Shim находит структуру камеры игры один раз и каждый кадр отдаёт камеру и мировое положение по быстрому каналу (общая память, не обход 7 ГБ). Окно `er-viewer` следует за камерой игры в реальном времени. Цифры: задержка, FPS обоих окон.
-- **B1 — мир вокруг игрока.** Карта по положению игрока: подземелья (`m1x`) и открытый мир по тайлам `m60_XX_YY` с подгрузкой; LOD.
-- **B2 — динамические объекты.** Персонажи/враги/предметы: какие модели и где (разбор памяти игры — `ChrIns` и т.п.), сначала в позе покоя.
-- **B3 — анимация.** Матрицы костей из игры (память или буферы скиннинга), скиннинг в нашем рендере.
-- **B4 — материалы и свет как в игре.** Перенос моделей освещения игры в MSL (G-буфер → свет → тонмаппинг) по DXIL-шейдерам игры; экспозиция, туман, солнце — из `cbSceneParam` каждый кадр. Нормали, деревья SpeedTree, кости статических мешей.
-- **B5 — наш кадр вместо игрового.** Игра не рисует (shim пропускает её отрисовку), наше окно — основное, ввод — в игру. Замер: CPU главного потока и FPS против эталона.
-- **B6 — интерфейс.** Решение: проход UI игры поверх нашего кадра или свой UI.
-
-Риски: структуры памяти зависят от версии игры (1.17.2); эффекты (FXR), частицы, UI; синхронизация двух процессов.
+**Fork 2:** how much more can mode C give? If the ceiling is close, move to phases 4–5.
+- **Result:** the override mechanism works (live toggle, reload, `.hlsl` and `.irpatch`), but the game is CPU-bound, so shader optimization does not pay off; tasks 3–4 are not done.
 
 ---
 
-## Фаза 6+ — Глубина
+## Phase 4: Data layer (done as path A M1–M2)
 
-Порядок решаем вместе с пользователем по результатам развилки 3. Конкретика по игре — в её документе.
-- **Мир:** стриминг, LOD, GPU-driven рендеринг (куллинг, indirect), тени, атмосфера, растительность, пост-обработка, особенности Apple GPU (tile memory, memoryless).
-- **Персонаж:** скиннинг, анимации, камера, перемещение, коллизия (Jolt или Rapier вместо оригинальной физики).
-- **Геймплей:** скриптовые VM игры, параметры, ИИ, бой, UI, сохранения.
-- **Звук.**
-- **Обобщение ядра:** когда появляется вторая игра — ревизия `grace-*` и вынос общего.
+**Why:** read the game's data natively. The foundation of mode A and a source of knowledge for mode C.
 
-Список «что не работает» честно ведём в `../grace-<игра>/docs/KNOWN_ISSUES.md`.
+Tasks:
+1. A `grace-prepare` framework: reads the pristine install, checks it against a hash lock file, writes a cache to `.local/cache/` with a version stamp (removed before writing and set afterwards, so an interrupted run never counts), a lock on the directory, a `--check` mode that reads no game data. *Not done yet: the data layer reads the install directly.*
+2. A game module: archives, compression, containers, models, textures, materials, maps (the list is in the game docs).
+3. Differential tests of the parsers against a community reference tool.
+4. The first import target: one small enclosed scene (each game has its own, see its docs). Report: what is recognized, what is not and why.
+
+**Done when:** the test scene cache is ready, every mesh and texture loads, anything unrecognized is listed with an explanation.
 
 ---
 
-## Реестр рисков (общие)
+## Phase 5: Native renderer MVP: "ghost walk" (done as path A M3–M6)
 
-| Риск | Где | Что делаем |
+**Why:** see the game world in a native app and compare it with the oracle.
+
+Tasks:
+1. A `grace-render` framework: device, queues, frame resources, unified memory without extra copies, BCn textures as is.
+2. Static geometry, materials through our own templates, light and fog close to the original (from the phase 1 frame structure and phase 2 shaders).
+3. A free camera (keyboard, mouse, gamepad through GameController) and `--capture`.
+4. **Comparison with the oracle:** the same camera (from phase 2) → the oracle frame and our frame → side by side (a numeric diff is planned).
+5. `Grace.app`: full screen, Cmd+Q, ProMotion, MetalFX, presets.
+
+**Done when:** a flight through the test scene at a stable ≥60 FPS at native resolution on the M5 Pro and acceptable on the minimum config; frames match the oracle in geometry and textures.
+
+**Milestone:** the "ghost walk". The user compares lighting, colors and materials with the original.
+
+**Fork 3:**
+- **C2:** move native rendering into a separate arm64 process fed from the live game's shim through shared memory (IOSurface, `MTLSharedEvent`). The playable original game with native rendering.
+- **Deep A:** keep growing our own runtime (phase 6+).
+- Both use the same `grace-render`. Decided by numbers and by the complexity of syncing scene state.
+- **Decided 2026-11-08: C2-b**: native rendering driven by the live game's **scene state** (ADR 0004). Not a full engine replacement: the logic stays original, the graphics are ours.
+
+---
+
+## Phase R: Restructuring (before C2-b, in progress)
+
+**Why:** Elder Grace is a framework and a game port is its consumer (ADR 0005). Cross-cutting changes went through same-named branches in two repositories, linked by relative paths.
+
+Tasks (in order):
+1. Merge `feat/game-camera` in both repositories. *Done 2026-11-08.*
+2. Pull the engine in through a **cargo git dependency** on a version tag + a local `[patch]` to the sibling checkout for joint development (ADR 0005).
+3. Remotes for `elder-grace` and `grace-eldenring` (`github.com/OsipShmel/*`, public; the user creates and pushes, the agent prepares).
+4. `elder-grace` as a library: public crate boundaries (`grace-core`, `grace-proto`, `grace-render`), versions/tags, README (what it is, architecture, how to depend on it, requirements), CHANGELOG. Game knowledge only in game repositories.
+5. `grace-eldenring`: README (what it is, how to build and run the port, what the user must provide: their own copy of the game), a dependency on an engine version.
+6. **English:** all docs (including `CLAUDE.md`, ADRs, specs/plans, `FORMATS.md`, `BASELINE.md`), comments, error/log/CLI messages, commit messages from now on. Conversation with the user stays in Russian.
+7. Check: a clean clone of both repositories → build, tests, clippy; `er-viewer --map` and `oracle run` work as before.
+
+**Done when:** two independent repositories, the port builds against an engine version, everything is in English, the READMEs are enough for a new person or agent.
+
+---
+
+## Phase 6: C2-b: native rendering driven by the live game
+
+**Why:** play the original game (FromSoftware logic) with Elder Grace's native graphics; then take the game's own rendering away.
+
+Milestones (each checked by automatic comparison with the oracle, as in M6):
+- **B0: live camera mirror.** The shim finds the game's camera structure once and every frame publishes the camera and world position through a fast channel (shared memory, not a 7 GB walk). The `er-viewer` window follows the game camera in real time. Numbers: latency, FPS of both windows.
+- **B1: the world around the player.** The map by player position: dungeons (`m1x`) and the open world by `m60_XX_YY` tiles with streaming; LOD.
+- **B2: dynamic objects.** Characters/enemies/items: which models and where (reading game memory: `ChrIns` etc.), in a rest pose first.
+- **B3: animation.** Bone matrices from the game (memory or skinning buffers), skinning in our renderer.
+- **B4: materials and lighting as in the game.** Port the game's lighting models to MSL (G-buffer → lighting → tone mapping) from the game's DXIL shaders; exposure, fog, sun from `cbSceneParam` every frame. Normals, SpeedTree trees, bones of static meshes.
+- **B5: our frame instead of the game's.** The game does not render (the shim skips its drawing), our window is the main one, input goes to the game. Measure: main-thread CPU and FPS against the oracle.
+- **B6: UI.** Decide: the game's UI pass over our frame, or our own UI.
+
+Risks: memory layouts depend on the game version (1.17.2); effects (FXR), particles, UI; synchronizing two processes.
+
+---
+
+## Phase 6+: Depth
+
+The order is decided with the user based on C2-b results. Game specifics live in its docs.
+- **World:** streaming, LOD, GPU-driven rendering (culling, indirect), shadows, atmosphere, vegetation, post-processing, Apple GPU specifics (tile memory, memoryless).
+- **Character:** skinning, animation, camera, movement, collision (Jolt or Rapier instead of the original physics).
+- **Gameplay:** the game's script VMs, params, AI, combat, UI, saves.
+- **Audio.**
+- **Generalizing the core:** when a second game appears, revise `grace-*` and extract what is shared.
+
+The honest list of what does not work is kept in `../grace-<game>/docs/KNOWN_ISSUES.md`.
+
+---
+
+## Risk register (general)
+
+| Risk | Where | What we do |
 |---|---|---|
-| Эталон не запускается или нестабилен в CrossOver/GPTK | Фаза 1 | Пробуем обе среды; фиксируем версии; в крайнем случае меняем первую цель |
-| Слой трансляции не даёт подменять шейдеры или прокси-DLL | Фазы 2–3 | Пробуем разные точки перехвата (`dxgi`/`d3d12`, другие среды); иначе используем shim только для наблюдения |
-| Shim меняет поведение игры (тайминги, синхронизация) | Фаза 2 | Режим полного проброса; сравнение FPS с shim и без |
-| Потолок режима C (логика под Rosetta) | Развилки 1–3 | Измеряем заранее; режим A как основной путь при CPU-bound |
-| Лицензии инструментов не позволяют брать код | Фазы 0, 4 | Используем как документацию и эталон для тестов, пишем своё |
-| Несовпадение «картинки» нативного рендера с оригиналом | Фаза 5 | Попиксельное сравнение с эталоном на той же камере |
-| Ядро обобщено «не так» | Всегда | Правило ядра: обобщаем по второй точке использования |
-| Проект не влезает в одну сессию | Всегда | `PROGRESS.md` как память; маленькие задачи; частые коммиты |
-
----
-
-## Первая сессия (что сказать агенту)
-
-> Начинаем фазу 0. Проверь окружение, поставь недостающее, помоги поставить чистую копию первой цели и собери скелет репозитория. Сначала доложи план сессии, потом работай.
+| The oracle does not start or is unstable in CrossOver/GPTK | Phase 1 | Try both environments; pin versions; change the first target as a last resort |
+| The translation layer does not allow shader or proxy DLL overrides | Phases 2–3 | Try different hook points (`dxgi`/`d3d12`, other environments); otherwise use the shim for observation only |
+| The shim changes game behavior (timing, synchronization) | Phase 2 | Full pass-through mode; FPS comparison with and without the shim |
+| The ceiling of mode C (logic under Rosetta) | Forks 1–3 | Measure early; mode A / C2-b as the main path when CPU-bound |
+| Tool licenses do not allow taking code | Phases 0, 4 | Use them as documentation and test references, write our own |
+| The native renderer's picture differs from the original | Phase 5, 6 | Compare with the oracle at the same camera |
+| Game memory layouts change between versions | Phase 6 | Self-validating signatures instead of fixed addresses; record the game version with every layout |
+| The core is generalized "wrong" | Always | The core rule: generalize at the second point of use |
+| The project does not fit one session | Always | `PROGRESS.md` as memory; small tasks; frequent commits |

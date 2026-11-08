@@ -1,29 +1,29 @@
-# Цели портирования
+# Porting targets
 
-Каждая игра — **отдельный git-репозиторий** `grace-<игра>` рядом с этим (ADR 0003), с каталогом `docs/`:
-- `README.md` — что это за цель, установка, тестовые сцены, как фазы плана ложатся на эту игру, специфичные риски;
-- `FORMATS.md` — знания о форматах и внутренностях (рендер, архивы, скрипты);
-- `BASELINE.md` — маршруты и цифры эталона (появляется на фазе 1);
-- `KNOWN_ISSUES.md` — что не работает (появляется, когда есть что запускать).
+Every game is a **separate git repository** `grace-<game>` next to this one (ADR 0003, ADR 0005), with a `docs/` directory:
+- `README.md`: what the target is, installation, test scenes, how the plan's phases map onto this game, specific risks;
+- `FORMATS.md`: knowledge about formats and internals (rendering, archives, scripts, memory layouts);
+- `BASELINE.md`: oracle routes and numbers (from phase 1);
+- `KNOWN_ISSUES.md`: what does not work (once there is something to run).
 
-Там же лежит код игры: форматы, подготовка, рантайм — крейты, которые зависят от `elder-grace` по пути (`../elder-grace/crates/...`). Ядро (`crates/grace-*`) об играх ничего не знает.
+The game's code lives there too: formats, preparation, runtime. Its crates depend on `elder-grace` through a cargo git dependency on a tagged version (see the engine README). The core (`crates/grace-*`) knows nothing about games.
 
-## Критерии выбора тестовой цели
+## Criteria for choosing a test target
 
-1. **Легально куплена пользователем** и ему интересна (он бета-тестер).
-2. **Графический API.** Самый ценный для инструмента — DX12, затем DX11: под ними сейчас большинство игр, которые хочется переносить. OpenGL и Vulkan-игры часто уже имеют нативные или открытые пути.
-3. **Нет готового нативного решения.** Если есть нативный мак-порт или зрелая открытая реимплементация, ценность для нас низкая.
-4. **Знания сообщества** о форматах (моддинг, вики, инструменты): сильно сокращают фазу 4.
-5. **Защита.** Офлайн-запуск без античита штатным для моддинга способом; обфускация exe мешает только глубоким хукам, графический shim от неё почти не зависит.
-6. **Работает в эталоне** (CrossOver/GPTK) и даёт стабильный маршрут для бенчмарка.
-7. **Размер.** Меньше — быстрее итерации, но хотя бы одна цель должна быть «тяжёлой», иначе не будет видно выигрыша.
+1. **Legally purchased by the user** and interesting to them (they are the beta tester).
+2. **Graphics API.** The most valuable for the tool is DX12, then DX11: most games worth porting use them today. OpenGL and Vulkan games often already have native or open paths.
+3. **No existing native solution.** If there is a native Mac port or a mature open reimplementation, the value for us is low.
+4. **Community knowledge** of the formats (modding, wikis, tools): shortens phase 4 a lot.
+5. **Protection.** Offline launch without anti-cheat in the way the modding community does it; exe obfuscation only hurts deep hooks, the graphics shim barely depends on it.
+6. **Runs in the oracle** (CrossOver/GPTK) and gives a stable benchmark route.
+7. **Size.** Smaller means faster iterations, but at least one target must be "heavy", otherwise no win is visible.
 
-## Кандидаты
+## Candidates
 
-| Игра | API | Статус | Комментарий |
+| Game | API | Status | Comment |
 |---|---|---|---|
-| **Elden Ring** | DX12 | **Первая цель (предварительно)** | Тяжёлая, интересная пользователю, огромная база знаний моддеров, есть эталон (~40 FPS на средних в CrossOver). Минус — масштаб. Репозиторий `../grace-eldenring/` |
-| Half-Life (2023, Steam) | OpenGL / софт | Отложена | 32-битный GoldSrc, уже есть открытая реимплементация Xash3D FWGS. Для DX12-конвейера даёт мало. Проверить, есть ли у текущей Steam-версии нативная сборка под мак |
-| *Вторая цель — TODO* | DX11/DX12 | Ищем | Небольшая DX11/DX12-игра из библиотеки пользователя без мак-версии: проверка, что ядро обобщается. Подбираем к концу фазы 3 |
+| **Elden Ring** | DX12 | **First target** | Heavy, interesting to the user, a huge modding knowledge base, has an oracle (~40 FPS on medium under GPTK). Downside: scale. Repository `../grace-eldenring/` |
+| Half-Life (2023, Steam) | OpenGL / software | Deferred | 32-bit GoldSrc, an open reimplementation (Xash3D FWGS) already exists. Gives little for the DX12 pipeline. Check whether the current Steam version has a native Mac build |
+| *Second target: TODO* | DX11/DX12 | Searching | A small DX11/DX12 game from the user's library without a Mac version: proves the core generalizes |
 
-Решение по первой цели фиксируем в `PROGRESS.md` в начале фазы 0. Смена цели — через ADR.
+The choice of a target is recorded in `PROGRESS.md`; changing it needs an ADR.

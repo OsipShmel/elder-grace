@@ -23,29 +23,61 @@ pub struct MeshData {
     pub texture: Option<usize>,
 }
 
+/// Экземпляр меша: матрица «модель → мир» (по столбцам).
+#[derive(Debug, Clone, Copy)]
+pub struct Instance {
+    pub mesh: usize,
+    pub transform: math::Mat4,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Scene {
     pub meshes: Vec<MeshData>,
     pub textures: Vec<TextureData>,
+    /// Пусто — каждый меш рисуется один раз как есть.
+    pub instances: Vec<Instance>,
 }
 
 impl Scene {
-    /// Границы всех вершин: (min, max).
+    /// Границы всех вершин в мире (с учётом экземпляров): (min, max).
     pub fn bounds(&self) -> ([f32; 3], [f32; 3]) {
         let mut lo = [f32::MAX; 3];
         let mut hi = [f32::MIN; 3];
-        for p in self.meshes.iter().flat_map(|m| &m.positions) {
+        let mut add = |p: [f32; 3]| {
             for a in 0..3 {
                 lo[a] = lo[a].min(p[a]);
                 hi[a] = hi[a].max(p[a]);
+            }
+        };
+        if self.instances.is_empty() {
+            self.meshes.iter().flat_map(|m| &m.positions).for_each(|&p| add(p));
+        } else {
+            // Углы bbox каждого меша, перенесённые экземпляром, — быстро и с запасом.
+            let local: Vec<Option<([f32; 3], [f32; 3])>> = self.meshes.iter().map(|m| mesh_bounds(&m.positions)).collect();
+            for inst in &self.instances {
+                let Some(Some((a, b))) = local.get(inst.mesh) else { continue };
+                for k in 0..8 {
+                    let c = [if k & 1 == 0 { a[0] } else { b[0] }, if k & 2 == 0 { a[1] } else { b[1] }, if k & 4 == 0 { a[2] } else { b[2] }];
+                    let w = math::transform(&inst.transform, c);
+                    add([w[0], w[1], w[2]]);
+                }
             }
         }
         if lo[0] > hi[0] { ([0.0; 3], [0.0; 3]) } else { (lo, hi) }
     }
 
     pub fn triangles(&self) -> usize {
-        self.meshes.iter().map(|m| m.indices.len() / 3).sum()
+        if self.instances.is_empty() {
+            self.meshes.iter().map(|m| m.indices.len() / 3).sum()
+        } else {
+            self.instances.iter().filter_map(|i| self.meshes.get(i.mesh)).map(|m| m.indices.len() / 3).sum()
+        }
     }
+}
+
+fn mesh_bounds(p: &[[f32; 3]]) -> Option<([f32; 3], [f32; 3])> {
+    let first = *p.first()?;
+    Some(p.iter().fold((first, first), |(lo, hi), v| (std::array::from_fn(|a| lo[a].min(v[a])), std::array::from_fn(|a| hi[a].max(v[a])))))
 }
 
 /// Орбитальная камера вокруг цели.
@@ -77,6 +109,20 @@ impl Camera {
 
     pub fn view_proj(&self, aspect: f32) -> math::Mat4 {
         let far = self.far.max(self.distance * 4.0);
-        math::mul(&math::perspective(self.fovy, aspect, self.near, far), &math::look_at(self.eye(), self.target, [0.0, 1.0, 0.0]))
+        // Ближняя плоскость — от расстояния до цели: и обзор сцены сверху, и шаг вплотную к стене.
+        let near = (self.distance * 0.01).clamp(0.02, self.near.max(0.02));
+        math::mul(&math::perspective(self.fovy, aspect, near, far), &math::look_at(self.eye(), self.target, [0.0, 1.0, 0.0]))
+    }
+
+    /// Сдвиг цели в осях камеры: вперёд (по горизонтали), вправо, вверх.
+    pub fn fly(&mut self, forward: f32, right: f32, up: f32) {
+        let (sy, cy) = self.yaw.sin_cos();
+        // Взгляд — от глаза к цели, т.е. против направления (sin yaw, cos yaw).
+        let f = [-sy, 0.0, -cy];
+        let r = [cy, 0.0, -sy];
+        for a in 0..3 {
+            self.target[a] += f[a] * forward + r[a] * right;
+        }
+        self.target[1] += up;
     }
 }

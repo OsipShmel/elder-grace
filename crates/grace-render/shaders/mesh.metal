@@ -19,10 +19,13 @@ vertex VOut grace_mesh_vs(uint vid [[vertex_id]],
                           const device packed_float3* positions [[buffer(0)]],
                           const device packed_float3* normals [[buffer(1)]],
                           const device packed_float2* uvs [[buffer(2)]],
-                          constant Uniforms& u [[buffer(3)]]) {
+                          constant Uniforms& u [[buffer(3)]],
+                          const device float4x4* instances [[buffer(4)]],
+                          uint iid [[instance_id]]) {
     VOut o;
-    o.pos = u.view_proj * float4(float3(positions[vid]), 1.0);
-    o.normal = float3(normals[vid]);
+    float4x4 m = instances[iid];
+    o.pos = u.view_proj * (m * float4(float3(positions[vid]), 1.0));
+    o.normal = (m * float4(float3(normals[vid]), 0.0)).xyz;
     o.uv = float2(uvs[vid]);
     return o;
 }

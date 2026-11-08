@@ -43,6 +43,9 @@ struct GpuMesh {
     index_count: usize,
     color: [f32; 4],
     texture: Option<usize>,
+    /// Матрицы экземпляров (float4x4 по столбцам).
+    instances: Buffer,
+    instance_count: usize,
 }
 
 /// Сцена в памяти GPU (unified memory: буферы Shared, без копий через blit).
@@ -151,11 +154,22 @@ impl Gpu {
     }
 
     pub fn upload(&self, scene: &Scene) -> Result<GpuScene> {
+        const IDENTITY: [f32; 16] = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        let mut per_mesh: Vec<Vec<[f32; 16]>> = vec![Vec::new(); scene.meshes.len()];
+        if scene.instances.is_empty() {
+            per_mesh.iter_mut().for_each(|v| v.push(IDENTITY));
+        } else {
+            for inst in &scene.instances {
+                if let Some(v) = per_mesh.get_mut(inst.mesh) {
+                    v.push(inst.transform);
+                }
+            }
+        }
         let meshes = scene
             .meshes
             .iter()
             .enumerate()
-            .filter(|(_, m)| !m.indices.is_empty() && !m.positions.is_empty())
+            .filter(|(i, m)| !m.indices.is_empty() && !m.positions.is_empty() && !per_mesh[*i].is_empty())
             .map(|(i, m)| {
                 let uvs = if m.uvs.len() == m.positions.len() { m.uvs.clone() } else { vec![[0.0; 2]; m.positions.len()] };
                 Ok(GpuMesh {
@@ -166,6 +180,8 @@ impl Gpu {
                     index_count: m.indices.len(),
                     color: m.color.unwrap_or_else(|| palette(i)),
                     texture: m.texture.filter(|&t| t < scene.textures.len() && m.uvs.len() == m.positions.len()),
+                    instances: buffer(&self.device, &per_mesh[i])?,
+                    instance_count: per_mesh[i].len(),
                 })
             })
             .collect::<Result<_>>()?;
@@ -223,14 +239,16 @@ impl Gpu {
                 enc.setVertexBuffer_offset_atIndex(Some(&m.normals), 0, 1);
                 enc.setVertexBuffer_offset_atIndex(Some(&m.uvs), 0, 2);
                 enc.setVertexBytes_length_atIndex(NonNull::from(&u).cast(), size_of::<Uniforms>(), 3);
+                enc.setVertexBuffer_offset_atIndex(Some(&m.instances), 0, 4);
                 enc.setFragmentTexture_atIndex(Some(tex.unwrap_or(&self.white)), 0);
                 enc.setFragmentBytes_length_atIndex(NonNull::from(&u).cast(), size_of::<Uniforms>(), 0);
-                enc.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset(
+                enc.drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset_instanceCount(
                     MTLPrimitiveType::Triangle,
                     m.index_count,
                     MTLIndexType::UInt32,
                     &m.indices,
                     0,
+                    m.instance_count,
                 );
             }
         }

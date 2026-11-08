@@ -1,4 +1,5 @@
-//! Окно просмотра: CAMetalLayer, орбитальная камера мышью, колесо — масштаб, Esc/Cmd+Q — выход.
+//! Окно просмотра: CAMetalLayer, орбитальная камера мышью, колесо — масштаб,
+//! WASD/QE — полёт (Shift — быстрее), Esc/Cmd+Q — выход.
 
 use anyhow::{Context, Result, bail};
 use objc2::rc::{Retained, autoreleasepool};
@@ -34,6 +35,9 @@ struct Viewer {
     dragging: bool,
     last: Option<(f64, f64)>,
     modifiers: ModifiersState,
+    /// Нажатые клавиши полёта: W S A D Q E.
+    keys: std::collections::HashSet<String>,
+    last_frame: Option<std::time::Instant>,
     error: Option<anyhow::Error>,
 }
 
@@ -58,7 +62,21 @@ impl Viewer {
         Ok(())
     }
 
+    /// WASD — вперёд/вбок, Q/E — вниз/вверх, Shift — быстрее.
+    fn fly(&mut self) {
+        let now = std::time::Instant::now();
+        let dt = self.last_frame.map_or(0.0, |t| (now - t).as_secs_f32()).min(0.1);
+        self.last_frame = Some(now);
+        let key = |k: &str| if self.keys.contains(k) { 1.0 } else { 0.0 };
+        let speed = (self.camera.distance * 1.5).max(2.0) * if self.modifiers.shift_key() { 4.0 } else { 1.0 } * dt;
+        let (f, r, u) = (key("w") - key("s"), key("d") - key("a"), key("e") - key("q"));
+        if f != 0.0 || r != 0.0 || u != 0.0 {
+            self.camera.fly(f * speed, r * speed, u * speed);
+        }
+    }
+
     fn draw(&mut self) {
+        self.fly();
         let Some(live) = &self.live else { return };
         autoreleasepool(|_| {
             let Some(drawable) = live.layer.nextDrawable() else { return };
@@ -84,11 +102,22 @@ impl ApplicationHandler for Viewer {
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => match &event.logical_key {
-                Key::Named(NamedKey::Escape) => el.exit(),
-                Key::Character(c) if c == "q" && self.modifiers.super_key() => el.exit(),
-                _ => {}
-            },
+            WindowEvent::KeyboardInput { event, .. } => {
+                let pressed = event.state == ElementState::Pressed;
+                match &event.logical_key {
+                    Key::Named(NamedKey::Escape) if pressed => el.exit(),
+                    Key::Character(c) if c == "q" && self.modifiers.super_key() && pressed => el.exit(),
+                    Key::Character(c) => {
+                        let c = c.to_lowercase();
+                        if pressed {
+                            self.keys.insert(c);
+                        } else {
+                            self.keys.remove(&c);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             WindowEvent::Resized(size) => {
                 if let Some(live) = &mut self.live {
                     live.layer.setDrawableSize(CGSize::new(f64::from(size.width.max(1)), f64::from(size.height.max(1))));
@@ -132,7 +161,7 @@ impl ApplicationHandler for Viewer {
 pub fn run(title: &str, gpu: Gpu, scene: GpuScene, camera: Camera) -> Result<()> {
     let el = EventLoop::new().context("цикл событий")?;
     el.set_control_flow(ControlFlow::Poll);
-    let mut v = Viewer { title: title.to_owned(), gpu, scene, camera, live: None, dragging: false, last: None, modifiers: ModifiersState::empty(), error: None };
+    let mut v = Viewer { title: title.to_owned(), gpu, scene, camera, live: None, dragging: false, last: None, modifiers: ModifiersState::empty(), keys: Default::default(), last_frame: None, error: None };
     el.run_app(&mut v)?;
     v.error.map_or(Ok(()), Err)
 }

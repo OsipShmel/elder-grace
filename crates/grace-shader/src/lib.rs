@@ -139,17 +139,57 @@ pub fn signature(chunk: &Chunk<'_>) -> Vec<SignatureElement> {
         .collect()
 }
 
-/// Сигнатуры входов и выходов контейнера DXBC (если есть ISGN/OSGN).
+/// Разбор чанка ISG1/OSG1 (DXIL): [count, 8, элементы по 32 байта]:
+/// stream, имя (смещение от начала чанка), индекс, system value, тип компонента,
+/// регистр, маска, маска чтения/записи, 2 байта выравнивания, min precision.
+pub fn signature1(chunk: &Chunk<'_>) -> Vec<SignatureElement> {
+    let d = chunk.data;
+    let count = u32_at(d, 0).unwrap_or(0) as usize;
+    (0..count)
+        .filter_map(|i| {
+            let e = 8 + i * 32;
+            let name_off = u32_at(d, e + 4)? as usize;
+            let name_end = d.get(name_off..)?.iter().position(|b| *b == 0)? + name_off;
+            Some(SignatureElement {
+                semantic: String::from_utf8_lossy(&d[name_off..name_end]).into_owned(),
+                index: u32_at(d, e + 8)?,
+                system_value: u32_at(d, e + 12)?,
+                component_type: u32_at(d, e + 16)?,
+                register: u32_at(d, e + 20)?,
+                mask: *d.get(e + 24)?,
+            })
+        })
+        .collect()
+}
+
+/// Сигнатуры входов и выходов контейнера (ISGN/OSGN у DXBC, ISG1/OSG1 у DXIL).
 pub fn signatures(data: &[u8]) -> Result<(Vec<SignatureElement>, Vec<SignatureElement>), ContainerError> {
     let (mut inputs, mut outputs) = (Vec::new(), Vec::new());
     for c in chunks(data)? {
         match &c.fourcc {
             b"ISGN" => inputs = signature(&c),
             b"OSGN" => outputs = signature(&c),
+            b"ISG1" => inputs = signature1(&c),
+            b"OSG1" => outputs = signature1(&c),
             _ => {}
         }
     }
     Ok((inputs, outputs))
+}
+
+/// Отладочное имя шейдера из чанка ILDN (DXIL): { u16 флаги, u16 длина, имя\0 }.
+/// У игр собранных с PDB это путь исходника — по нему шейдеры ищутся по смыслу.
+pub fn debug_name(data: &[u8]) -> Option<String> {
+    let c = chunks(data).ok()?.into_iter().find(|c| &c.fourcc == b"ILDN")?;
+    let len = u16::from_le_bytes([*c.data.get(2)?, *c.data.get(3)?]) as usize;
+    let name = c.data.get(4..4 + len)?;
+    Some(String::from_utf8_lossy(name).into_owned())
+}
+
+/// Краткое имя из отладочного пути: файл без каталога и расширений `.ppo.pdb`/`.pdb`.
+pub fn short_name(debug: &str) -> &str {
+    let file = debug.rsplit(['\\', '/']).next().unwrap_or(debug);
+    file.split('.').next().unwrap_or(file)
 }
 
 /// Число элементов в сигнатуре ISGN/OSGN/ISG1/OSG1 (первое поле чанка).
@@ -255,6 +295,48 @@ mod tests {
         d.extend_from_slice(&0x0000_0050u32.to_le_bytes()); // ps (тип 0), 5.0
         d.extend_from_slice(&2u32.to_le_bytes()); // длина программы в токенах
         d
+    }
+
+    /// Контейнер из одного чанка.
+    fn container(fourcc: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut d = Vec::new();
+        d.extend_from_slice(b"DXBC");
+        d.extend_from_slice(&[0u8; 16]);
+        d.extend_from_slice(&1u32.to_le_bytes());
+        d.extend_from_slice(&((36 + 8 + body.len()) as u32).to_le_bytes());
+        d.extend_from_slice(&1u32.to_le_bytes());
+        d.extend_from_slice(&36u32.to_le_bytes());
+        d.extend_from_slice(fourcc);
+        d.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        d.extend_from_slice(body);
+        d
+    }
+
+    #[test]
+    fn parses_dxil_signature_and_debug_name() {
+        // ISG1: один элемент TEXCOORD5, регистр 5, маска xyzw, float (3).
+        let mut b = Vec::new();
+        for v in [1u32, 8, 0, 40, 5, 0, 3, 5] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(&[0x0f, 0x0f, 0, 0]);
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend_from_slice(b"TEXCOORD\0");
+        let (inputs, outputs) = signatures(&container(b"ISG1", &b)).expect("разбор");
+        assert!(outputs.is_empty());
+        assert_eq!(
+            inputs,
+            vec![SignatureElement { semantic: "TEXCOORD".into(), index: 5, system_value: 0, component_type: 3, register: 5, mask: 0x0f }]
+        );
+
+        let path = b"N:\\GR\\shader\\M_Skin_Velo.ppo.pdb";
+        let mut n = vec![0u8, 0];
+        n.extend_from_slice(&(path.len() as u16).to_le_bytes());
+        n.extend_from_slice(path);
+        n.push(0);
+        let name = debug_name(&container(b"ILDN", &n)).expect("имя");
+        assert_eq!(name, "N:\\GR\\shader\\M_Skin_Velo.ppo.pdb");
+        assert_eq!(short_name(&name), "M_Skin_Velo");
     }
 
     #[test]

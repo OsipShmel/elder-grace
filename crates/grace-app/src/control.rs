@@ -59,6 +59,7 @@ fn handle(conn: UnixStream, stats: &SharedStats) {
                 Ok(s) => Response::Stats(s.clone()),
                 Err(_) => Response::Error { message: "статистика недоступна".into() },
             },
+            Ok(Some(Request::Overrides { .. } | Request::Bound { .. })) => Response::Error { message: "подмены шейдеров есть только в shim d3d12".into() },
             Err(e) => Response::Error { message: format!("неверный запрос: {e}") },
         };
         if write_message(&mut writer, &response).is_err() {

@@ -2,11 +2,16 @@
 //! `cargo xtask shim [--release]` — собрать shim под Windows x86_64.
 //! `cargo xtask oracle …` — среда эталона на GPTK (см. oracle.rs).
 //! `cargo xtask shaders [игра]` — корпус шейдеров: сводка → DXIL→metallib → проверка в Metal.
-//! `cargo xtask overrides [игра]` — собрать подмены шейдеров из `../grace-<игра>/shaders/overrides/*.hlsl`.
+//! `cargo xtask overrides [игра] [--reload]` — собрать подмены шейдеров из `../grace-<игра>/shaders/overrides/`
+//!   (`.hlsl` — замена, `.irpatch` — правка оригинального DXIL; см. overrides.rs);
+//!   `--reload` — сразу перезагрузить их в запущенной игре (shim d3d12, TCP 47322).
+//! `cargo xtask shader <хеш>.<стадия> [--ir]` — имя, сигнатуры, ресурсы шейдера из дампа; `--ir` — дизассемблер в `.local`.
 //! `cargo xtask bench <журнал|метка> [<журнал2|метка2>] [--skip сек] [--game игра]` — отчёт по времени кадра.
-//! `cargo xtask trace [--seconds N] [--label L] [--game игра]` — Metal System Trace запущенной игры + вердикт CPU/GPU.
+//! `cargo xtask trace [--seconds N] [--label L] [--game игра] [--template T] [--instrument I]…` — трейс запущенной игры;
+//!   по умолчанию Metal System Trace + вердикт CPU/GPU; `--template "System Trace"` — состояния потоков (ожидания).
 
 mod oracle;
+mod overrides;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -21,7 +26,16 @@ fn main() -> Result<()> {
         Some("shim") => shim(flag("--release")),
         Some("oracle") => oracle::main(&args[1..]),
         Some("shaders") => shaders(args.get(1).map_or("eldenring", String::as_str)),
-        Some("overrides") => overrides(args.get(1).map_or("eldenring", String::as_str)),
+        Some("overrides") => {
+            let game = args.get(1).filter(|a| !a.starts_with("--")).map_or("eldenring", String::as_str);
+            overrides::build(&project_dir()?, game)?;
+            if flag("--reload") { reload_overrides() } else { Ok(()) }
+        }
+        Some("shader") => {
+            let id = args.get(1).filter(|a| !a.starts_with("--")).context("использование: cargo xtask shader <хеш>.<стадия> [--ir] [--game игра]")?;
+            let game = args.iter().position(|a| a == "--game").and_then(|i| args.get(i + 1)).map_or("eldenring", String::as_str);
+            overrides::show(&project_dir()?, game, id, flag("--ir"))
+        }
         Some("bench") => bench(&args[1..]),
         Some("trace") => trace(&args[1..]),
         _ => bail!("использование: cargo xtask bundle [--debug] | shim [--release] | oracle …"),
@@ -30,6 +44,11 @@ fn main() -> Result<()> {
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().expect("xtask лежит в корне workspace").to_owned()
+}
+
+/// Общая папка проекта (`ProjectPort/`): рядом лежат репозитории игр и `.local/`.
+fn project_dir() -> Result<PathBuf> {
+    Ok(root().parent().context("корень ProjectPort")?.to_owned())
 }
 
 fn cargo(args: &[&str]) -> Result<()> {
@@ -176,43 +195,23 @@ fn shaders(game: &str) -> Result<()> {
     cargo(&["run", "-q", "--release", "-p", "grace-shader", "--", "metallib", &metal_s])
 }
 
-/// Подмены шейдеров: `../grace-<игра>/shaders/overrides/<хеш>.<стадия>.hlsl` →
-/// `.local/shaders/<игра>-override/<хеш>.<стадия>.dxbc` (vkd3d, профиль `<стадия>_5_0`).
-/// Имя файла = хеш исходного шейдера из дампа: по нему shim находит, что подменять.
-fn overrides(game: &str) -> Result<()> {
-    let project = root().parent().context("корень ProjectPort")?.to_owned();
-    let src = project.join(format!("grace-{game}/shaders/overrides"));
-    let out = project.join(format!(".local/shaders/{game}-override"));
-    let vkd3d = project.join(".local/tools/bin/vkd3d-compiler");
-    if !vkd3d.exists() {
-        bail!("нет {} — см. сборку vkd3d в docs/ARCHITECTURE.md", vkd3d.display());
-    }
-    std::fs::create_dir_all(&out)?;
-    let (mut ok, mut failed) = (0, 0);
-    let mut files: Vec<_> = std::fs::read_dir(&src).with_context(|| format!("чтение {}", src.display()))?.filter_map(|e| e.ok().map(|e| e.path())).collect();
-    files.sort();
-    for path in files.iter().filter(|p| p.extension().and_then(|e| e.to_str()) == Some("hlsl")) {
-        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let Some(stage) = stem.split('.').nth(1) else { continue };
-        let target = out.join(format!("{stem}.dxbc"));
-        let res = Command::new(&vkd3d)
-            .args(["-x", "hlsl", "-p", &format!("{stage}_5_0"), "-b", "dxbc-tpf", "-e", "main", "-o"])
-            .arg(&target)
-            .arg(path)
-            .output()?;
-        if res.status.success() {
-            println!("  {stem}: собран");
-            ok += 1;
-        } else {
-            println!("  {stem}: ОШИБКА {}", String::from_utf8_lossy(&res.stderr).trim());
-            failed += 1;
+/// Перезагрузка подмен в запущенной игре через канал управления shim d3d12.
+fn reload_overrides() -> Result<()> {
+    use std::io::BufReader;
+    let addr = "127.0.0.1:47322";
+    let stream = std::net::TcpStream::connect(addr).with_context(|| format!("нет соединения с {addr} — игра с shim запущена?"))?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(60)))?;
+    let mut w = stream.try_clone()?;
+    grace_proto::write_message(&mut w, &grace_proto::Request::Overrides { op: grace_proto::OverrideOp::Reload })?;
+    match grace_proto::read_message::<_, grace_proto::Response>(&mut BufReader::new(stream))? {
+        Some(grace_proto::Response::Overrides(o)) => {
+            println!("{}", o.last_reload);
+            println!("подмены {} · пар PSO {}", if o.enabled { "ВКЛ" } else { "выкл" }, o.pairs);
+            Ok(())
         }
+        Some(grace_proto::Response::Error { message }) => bail!("shim: {message}"),
+        other => bail!("неожиданный ответ shim: {other:?}"),
     }
-    println!("подмен собрано {ok}, ошибок {failed} → {}", out.display());
-    if failed > 0 {
-        bail!("не все подмены собрались");
-    }
-    Ok(())
 }
 
 /// Отчёт по журналам кадров. Аргумент — путь к CSV или метка прогона
@@ -272,14 +271,21 @@ fn trace(args: &[String]) -> Result<()> {
     if out.exists() {
         bail!("{} уже есть — задай другую --label", out.display());
     }
-    println!("запись Metal System Trace: {exe} (pid {pid}), {seconds} с → {}", out.display());
-    let status = Command::new("xcrun")
-        .args(["xctrace", "record", "--template", "Metal System Trace", "--attach", &pid, "--time-limit", &format!("{seconds}s", seconds = seconds.trim_end_matches('s')), "--output"])
-        .arg(&out)
-        .stdout(std::process::Stdio::null())
-        .status()?;
+    let template = opt("--template").unwrap_or_else(|| "Metal System Trace".into());
+    let instruments: Vec<&String> = args.iter().enumerate().filter(|(_, a)| *a == "--instrument").filter_map(|(i, _)| args.get(i + 1)).collect();
+    println!("запись «{template}»: {exe} (pid {pid}), {seconds} с → {}", out.display());
+    let mut cmd = Command::new("xcrun");
+    cmd.args(["xctrace", "record", "--template", &template, "--attach", &pid, "--time-limit", &format!("{seconds}s", seconds = seconds.trim_end_matches('s'))]);
+    for i in &instruments {
+        cmd.args(["--instrument", i.as_str()]);
+    }
+    let status = cmd.arg("--output").arg(&out).stdout(std::process::Stdio::null()).status()?;
     if !status.success() {
         bail!("xctrace record завершился с ошибкой");
+    }
+    if template != "Metal System Trace" {
+        println!("трейс записан; разбор вердикта — только для Metal System Trace (таблицы: xcrun xctrace export --input {} --toc)", out.display());
+        return Ok(());
     }
     let out_s = out.to_string_lossy().into_owned();
     cargo(&["run", "-q", "--release", "-p", "grace-bench", "--", "trace", &out_s, "--pid", &pid])

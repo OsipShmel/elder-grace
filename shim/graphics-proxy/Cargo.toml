@@ -10,5 +10,8 @@ publish.workspace = true
 name = "d3d12"
 crate-type = ["cdylib"]
 
+[dependencies]
+grace-proto.workspace = true
+
 [lints]
 workspace = true

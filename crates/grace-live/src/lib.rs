@@ -118,7 +118,9 @@ pub struct LiveSession<T> {
 }
 
 impl<T: Clone> LiveSession<T> {
-    pub fn new(mirror_file: &Path, discover: impl Fn() -> Result<Vec<MirrorRegion>> + Send + Sync + 'static, decode: impl Fn(&Snapshot) -> Option<T> + 'static) -> Result<Self> {
+    pub fn new(mirror_file: &Path,
+               discover: impl Fn()
+                   -> Result<Vec<MirrorRegion>> + Send + Sync + 'static, decode: impl Fn(&Snapshot) -> Option<T> + 'static) -> Result<Self> {
         let reader = Arc::new(MirrorReader::open(mirror_file)?);
         let arrivals = Arc::new(Mutex::new(Arrivals::default()));
         let (r, a) = (Arc::clone(&reader), Arc::clone(&arrivals));

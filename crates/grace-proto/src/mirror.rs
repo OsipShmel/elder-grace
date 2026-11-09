@@ -94,7 +94,9 @@ fn seq_of(base: *const u8) -> &'static AtomicU64 {
 ///
 /// # Safety
 /// `base` is 8-aligned, points to [`SIZE`] writable bytes, and there is a single writer.
-pub unsafe fn write(base: *mut u8, regions: &[MirrorRegion], offsets: &[usize], info: &FrameInfo, mut fill: impl FnMut(usize, &mut [u8]) -> Option<u64>) {
+pub unsafe fn write(base: *mut u8, regions: &[MirrorRegion],
+                    offsets: &[usize], info: &FrameInfo,
+                    mut fill: impl FnMut(usize, &mut [u8]) -> Option<u64>) {
     let seq = seq_of(base);
     let s = seq.load(Ordering::Relaxed);
     let s = if s % 2 == 1 { s + 1 } else { s };

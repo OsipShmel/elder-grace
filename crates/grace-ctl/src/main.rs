@@ -255,6 +255,11 @@ fn print(cli: &Cli, response: &Response) -> Result<()> {
                 println!("  {a:#x}");
             }
         }
+        Response::Modules { modules } => {
+            for m in modules {
+                println!("{:#014x} {:>10} {}", m.base, m.size, m.name);
+            }
+        }
         Response::Mirror { generation } => println!("mirror: region set {generation}"),
         Response::Error { message } => bail!("error: {message}"),
     }

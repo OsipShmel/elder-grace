@@ -132,7 +132,7 @@ fn serve(conn: TcpStream) {
                 Ok(generation) => Response::Mirror { generation },
                 Err(message) => Response::Error { message },
             },
-            Ok(Some(Request::Overrides { .. } | Request::Bound { .. } | Request::Camera { .. } | Request::Peek { .. } | Request::FindFloats { .. })) => Response::Error { message: "overrides and memory requests live in the d3d12 shim (port 47322)".into() },
+            Ok(Some(Request::Overrides { .. } | Request::Bound { .. } | Request::Camera { .. } | Request::Peek { .. } | Request::FindFloats { .. } | Request::Modules | Request::FindPointers { .. })) => Response::Error { message: "overrides and memory requests live in the d3d12 shim (port 47322)".into() },
             Err(e) => Response::Error { message: format!("bad request: {e}") },
         };
         if write_message(&mut writer, &response).is_err() {

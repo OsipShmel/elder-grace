@@ -289,10 +289,10 @@ mod tests {
         let mut w = writer(&path);
         let r = MirrorReader::open(&path).unwrap();
         assert!(r.snapshot().is_none());
-        let regions = [MirrorRegion { addr: 0x10, len: 4 }];
+        let regions = [MirrorRegion::at(0x10, 4)];
         let offsets = mirror::layout(&regions).unwrap();
         let info = FrameInfo { frame: 3, generation: 1, ..Default::default() };
-        unsafe { mirror::write(w.as_mut_ptr(), &regions, &offsets, &info, |_, d| { d.copy_from_slice(&[1, 2, 3, 4]); true }) };
+        unsafe { mirror::write(w.as_mut_ptr(), &regions, &offsets, &info, |_, d| { d.copy_from_slice(&[1, 2, 3, 4]); Some(0x10) }) };
         let s = r.snapshot().unwrap();
         assert_eq!((s.info.frame, s.regions[0].bytes.as_slice()), (3, &[1u8, 2, 3, 4][..]));
         std::fs::remove_dir_all(&dir).unwrap();

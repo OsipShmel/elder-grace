@@ -19,10 +19,23 @@ const ENTRY: usize = 16;
 const DATA: usize = TABLE + MAX_REGIONS * ENTRY;
 
 /// A memory region of the game process to copy every frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Without `chain` the region is at `addr`. With a chain the shim follows pointers every frame:
+/// `p = addr; for off in chain { p = *(p as *const u64) + off }`, so `addr` is where the first
+/// pointer lives (for example a static in the game's image) and the last offset points at the
+/// data. The record's table holds the resolved address.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct MirrorRegion {
     pub addr: u64,
     pub len: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chain: Vec<i64>,
+}
+
+impl MirrorRegion {
+    pub fn at(addr: u64, len: u32) -> Self {
+        Self { addr, len, chain: Vec::new() }
+    }
 }
 
 /// Per-frame header values written by the shim.
@@ -77,11 +90,11 @@ fn seq_of(base: *const u8) -> &'static AtomicU64 {
 }
 
 /// Writes one frame. `offsets` comes from [`layout`] for the same `regions`; `fill(i, dst)`
-/// copies region `i` into `dst` and returns whether the read succeeded.
+/// copies region `i` into `dst` and returns the address it read from (`None` if the read failed).
 ///
 /// # Safety
 /// `base` is 8-aligned, points to [`SIZE`] writable bytes, and there is a single writer.
-pub unsafe fn write(base: *mut u8, regions: &[MirrorRegion], offsets: &[usize], info: &FrameInfo, mut fill: impl FnMut(usize, &mut [u8]) -> bool) {
+pub unsafe fn write(base: *mut u8, regions: &[MirrorRegion], offsets: &[usize], info: &FrameInfo, mut fill: impl FnMut(usize, &mut [u8]) -> Option<u64>) {
     let seq = seq_of(base);
     let s = seq.load(Ordering::Relaxed);
     let s = if s % 2 == 1 { s + 1 } else { s };
@@ -100,11 +113,11 @@ pub unsafe fn write(base: *mut u8, regions: &[MirrorRegion], offsets: &[usize], 
         put(52, &info.generation.to_le_bytes());
         for (i, (r, &off)) in regions.iter().zip(offsets).enumerate() {
             let dst = std::slice::from_raw_parts_mut(base.add(off), r.len as usize);
-            let ok = fill(i, dst);
+            let read = fill(i, dst);
             let e = TABLE + i * ENTRY;
-            put(e, &r.addr.to_le_bytes());
+            put(e, &read.unwrap_or(r.addr).to_le_bytes());
             put(e + 8, &r.len.to_le_bytes());
-            put(e + 12, &u32::from(!ok).to_le_bytes());
+            put(e + 12, &u32::from(read.is_none()).to_le_bytes());
         }
     }
     seq.store(s + 2, Ordering::Release);
@@ -150,7 +163,7 @@ fn parse(b: &[u8], seq: u64) -> Option<Snapshot> {
     }
     let n = (u32_at(12) as usize).min(MAX_REGIONS);
     let info = FrameInfo { frame: u64_at(24), qpc: u64_at(32) as i64, qpc_freq: u64_at(40) as i64, copy_ns: u32_at(48), generation: u32_at(52) };
-    let table: Vec<MirrorRegion> = (0..n).map(|i| MirrorRegion { addr: u64_at(TABLE + i * ENTRY), len: u32_at(TABLE + i * ENTRY + 8) }).collect();
+    let table: Vec<MirrorRegion> = (0..n).map(|i| MirrorRegion::at(u64_at(TABLE + i * ENTRY), u32_at(TABLE + i * ENTRY + 8))).collect();
     let offsets = layout(&table).ok()?;
     let regions = table
         .iter()
@@ -174,13 +187,13 @@ mod tests {
         let mut buf = record();
         let base = buf.as_mut_ptr().cast::<u8>();
         assert_eq!(unsafe { read(base) }, None, "an empty record has no snapshot");
-        let regions = [MirrorRegion { addr: 0x1000, len: 5 }, MirrorRegion { addr: 0x2000, len: 3 }];
+        let regions = [MirrorRegion::at(0x1000, 5), MirrorRegion { addr: 0x2000, len: 3, chain: vec![8] }];
         let offsets = layout(&regions).unwrap();
         let info = FrameInfo { frame: 7, qpc: 123, qpc_freq: 10_000_000, copy_ns: 900, generation: 2 };
         unsafe {
             write(base, &regions, &offsets, &info, |i, dst| {
                 dst.fill(i as u8 + 1);
-                i == 0
+                (i == 0).then_some(0x1000)
             })
         };
         let s = unsafe { read(base) }.unwrap();
@@ -188,7 +201,7 @@ mod tests {
         assert_eq!(s.info, info);
         assert_eq!(s.regions[0], RegionData { addr: 0x1000, ok: true, bytes: vec![1; 5] });
         assert_eq!(s.regions[1], RegionData { addr: 0x2000, ok: false, bytes: vec![2; 3] });
-        unsafe { write(base, &regions, &offsets, &info, |_, _| true) };
+        unsafe { write(base, &regions, &offsets, &info, |_, _| Some(0x1000)) };
         assert_eq!(unsafe { current_seq(base) }, 4);
     }
 
@@ -196,28 +209,28 @@ mod tests {
     fn torn_record_is_not_returned() {
         let mut buf = record();
         let base = buf.as_mut_ptr().cast::<u8>();
-        unsafe { write(base, &[], &[], &FrameInfo::default(), |_, _| true) };
+        unsafe { write(base, &[], &[], &FrameInfo::default(), |_, _| None) };
         buf[SEQ / 8] = 3; // writer in the middle of a frame
         assert_eq!(unsafe { read(buf.as_ptr().cast()) }, None);
     }
 
     #[test]
     fn limits() {
-        assert!(layout(&[MirrorRegion { addr: 0, len: 1 }; MAX_REGIONS + 1]).is_err());
-        assert!(layout(&[MirrorRegion { addr: 0, len: (SIZE - DATA) as u32 }]).is_ok());
-        assert!(layout(&[MirrorRegion { addr: 0, len: (SIZE - DATA + 1) as u32 }]).is_err());
+        assert!(layout(&vec![MirrorRegion::at(0, 1); MAX_REGIONS + 1]).is_err());
+        assert!(layout(&[MirrorRegion::at(0, (SIZE - DATA) as u32)]).is_ok());
+        assert!(layout(&[MirrorRegion::at(0, (SIZE - DATA + 1) as u32)]).is_err());
     }
 
     #[test]
     fn concurrent_reads_are_consistent() {
         let mut buf = record();
         let addr = buf.as_mut_ptr() as usize;
-        let regions = [MirrorRegion { addr: 0, len: 4096 }];
+        let regions = vec![MirrorRegion::at(0, 4096)];
         let offsets = layout(&regions).unwrap();
         let writer = std::thread::spawn(move || {
             for f in 1..=20_000u64 {
                 let info = FrameInfo { frame: f, ..Default::default() };
-                unsafe { write(addr as *mut u8, &regions, &offsets, &info, |_, dst| { dst.fill(f as u8); true }) };
+                unsafe { write(addr as *mut u8, &regions, &offsets, &info, |_, dst| { dst.fill(f as u8); Some(0) }) };
             }
         });
         let mut seen = 0;

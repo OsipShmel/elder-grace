@@ -140,6 +140,56 @@ pub fn find_floats(ranges: &[(f32, f32)], limit: u32) -> (usize, Vec<u64>) {
     (regions, addrs)
 }
 
+/// Addresses of 8-aligned u64 values within [lo, hi] (a pointer scan), at most `limit`.
+pub fn find_pointers(lo: u64, hi: u64, limit: u32) -> (usize, Vec<u64>) {
+    let mut addrs = Vec::new();
+    let (regions, _) = scan(8, 8, |addr, f| {
+        let v = u64::from(f(0).to_bits()) | (u64::from(f(4).to_bits()) << 32);
+        if v >= lo && v <= hi {
+            addrs.push(addr as u64);
+        }
+        addrs.len() < limit as usize
+    });
+    (regions, addrs)
+}
+
+unsafe extern "system" {
+    fn K32EnumProcessModules(process: *mut c_void, modules: *mut *mut c_void, cb: u32, needed: *mut u32) -> i32;
+    fn K32GetModuleBaseNameW(process: *mut c_void, module: *mut c_void, name: *mut u16, size: u32) -> u32;
+    fn K32GetModuleInformation(process: *mut c_void, module: *mut c_void, info: *mut ModuleInformation, cb: u32) -> i32;
+}
+
+#[repr(C)]
+struct ModuleInformation {
+    base: *mut c_void,
+    size: u32,
+    entry: *mut c_void,
+}
+
+/// Modules loaded in this process: name, image base, image size.
+pub fn modules() -> Vec<grace_proto::ModuleInfo> {
+    // SAFETY: plain psapi calls on the current process with buffers we own.
+    unsafe {
+        let process = GetCurrentProcess();
+        let mut handles = vec![std::ptr::null_mut::<c_void>(); 1024];
+        let mut needed = 0u32;
+        if K32EnumProcessModules(process, handles.as_mut_ptr(), (handles.len() * 8) as u32, &mut needed) == 0 {
+            return Vec::new();
+        }
+        handles.truncate((needed as usize / 8).min(handles.len()));
+        handles
+            .into_iter()
+            .filter_map(|m| {
+                let mut name = [0u16; 260];
+                let n = K32GetModuleBaseNameW(process, m, name.as_mut_ptr(), name.len() as u32) as usize;
+                let mut info = ModuleInformation { base: std::ptr::null_mut(), size: 0, entry: std::ptr::null_mut() };
+                (K32GetModuleInformation(process, m, &mut info, size_of::<ModuleInformation>() as u32) != 0)
+                    .then(|| grace_proto::ModuleInfo { name: String::from_utf16_lossy(&name[..n]), base: info.base as u64, size: u64::from(info.size) })
+            })
+            .collect()
+    }
+}
+
 /// Debug read of game memory (a read error gives an empty reply, not a crash).
 pub fn peek(addr: u64, len: u32) -> Vec<u8> {
     let mut buf = vec![0u8; (len as usize).min(1 << 20)];

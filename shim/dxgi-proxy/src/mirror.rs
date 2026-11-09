@@ -99,11 +99,23 @@ pub fn on_present(frame: u64) {
     }
     // SAFETY: GetCurrentProcess returns a pseudo-handle.
     let process = unsafe { GetCurrentProcess() };
-    let copy = |i: usize, dst: &mut [u8]| {
+    let read = |addr: u64, dst: &mut [u8]| {
         let mut got = 0usize;
         // SAFETY: ReadProcessMemory copies into our buffer and fails (no fault) on unmapped memory.
-        let ok = unsafe { ReadProcessMemory(process, set.regions[i].addr as usize as *const c_void, dst.as_mut_ptr().cast(), dst.len(), &mut got) } != 0;
+        let ok = unsafe { ReadProcessMemory(process, addr as usize as *const c_void, dst.as_mut_ptr().cast(), dst.len(), &mut got) } != 0;
         ok && got == dst.len()
+    };
+    let copy = |i: usize, dst: &mut [u8]| {
+        let r = &set.regions[i];
+        let mut addr = r.addr;
+        for off in &r.chain {
+            let mut p = [0u8; 8];
+            if !read(addr, &mut p) {
+                return None;
+            }
+            addr = u64::from_le_bytes(p).wrapping_add_signed(*off);
+        }
+        read(addr, dst).then_some(addr)
     };
     let mut info = FrameInfo { frame, qpc: t0, qpc_freq: freq, copy_ns: 0, generation: set.generation };
     // The copy time of this frame is known only after it, so the header carries the previous frame's.

@@ -30,6 +30,18 @@ pub enum Request {
     /// Live mirror (dxgi shim): copy these regions into the mirror file at every `Present`.
     /// An empty list stops mirroring. See `mirror`.
     Mirror { regions: Vec<MirrorRegion> },
+    /// Modules loaded in the game process (d3d12 shim): for static addresses (image base + RVA).
+    Modules,
+    /// Debug: addresses of 8-aligned u64 values within [lo, hi] in writable memory (a pointer scan).
+    FindPointers { lo: u64, hi: u64, limit: u32 },
+}
+
+/// A module of the game process.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleInfo {
+    pub name: String,
+    pub base: u64,
+    pub size: u64,
 }
 
 /// Where the fields are in the camera cbuffer (byte offsets from the start of the cbuffer).
@@ -80,6 +92,7 @@ pub enum Response {
     Peek { addr: u64, bytes: Vec<u8> },
     Found { regions: usize, addrs: Vec<u64> },
     Mirror { generation: u32 },
+    Modules { modules: Vec<ModuleInfo> },
     Error {
         message: String,
     },
